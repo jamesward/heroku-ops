@@ -34,10 +34,10 @@ object OpsRoutes:
 
   /** One line per drain request, for the drain failure experiment: what Logplex sent (its frame id and message count identify a
     * batch, so a redelivery shows up as the same frame id twice) and what we answered. */
-  def drainRequestLine(req: Request, bytes: Int, outcome: Outcome, status: Status): String =
+  def drainRequestLine(req: Request, bytes: Int, outcome: Outcome, status: Status, retryAfter: Option[String]): String =
     def h(name: String) = req.rawHeader(name).getOrElse("-")
     s"drain app=${req.queryParam("app").getOrElse("-")} frame=${h("Logplex-Frame-Id")} msgs=${h("Logplex-Msg-Count")} bytes=$bytes " +
-      s"outcome=$outcome status=${status.code} ua=${h("User-Agent").take(30)}"
+      s"outcome=$outcome status=${status.code} ra=${retryAfter.getOrElse("-")} ua=${h("User-Agent").take(30)}"
 
   /** Incidents that could not be handed to the app's routine in the last day. While there are any, `/health` answers 503: the
     * GitHub Actions job `watch.yml` polls it and opens an issue, which GitHub emails to the owner. It is the one channel that doesn't
@@ -75,9 +75,11 @@ object OpsRoutes:
         body <- req.body.asArray.orElseFail(Response.badRequest)
         outcome <- ops.drain(req.queryParam("app"), req.rawHeader("Authorization"), body)
         res = outcome match
-          case Outcome.Accepted => Response.status(ops.settings.drainStatus)
+          case Outcome.Accepted =>
+            val ok = Response.status(ops.settings.drainStatus)
+            ops.settings.drainRetryAfter.fold(ok)(v => ok.addHeader("Retry-After", v))
           case other            => response(other)
-        _ <- ZIO.logInfo(drainRequestLine(req, body.length, outcome, res.status))
+        _ <- ZIO.logInfo(drainRequestLine(req, body.length, outcome, res.status, res.rawHeader("Retry-After")))
       yield res,
     Method.POST / "hook" -> handler: (req: Request) =>
       for
