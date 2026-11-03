@@ -85,8 +85,11 @@ object OpsMcp:
       .instructions(instructions)
       .tool(listApps).tool(appStatus).tool(recentEvents).tool(timeseries).tool(incidents).tool(releases).tool(probeNow).tool(alertRules)
 
-  /** The MCP endpoint, `/mcp`, behind `Authorization: Bearer <Secrets.mcpToken>`. A request without the token gets HTTP 200 and a
-    * JSON-RPC error, never a 401: claude.ai takes a 401 for OAuth ("Sign in now (Detected)") and heroku-ops has none. */
+  /** The MCP endpoint, `/mcp`, behind `Authorization: Bearer <Secrets.mcpToken>`. The handshake (`initialize`, `ping`, ...) is answered
+    * without the token so claude.ai's connector check sees a regular server; every other request without it gets HTTP 200 and a JSON-RPC
+    * error, never a 401: claude.ai takes a 401 for OAuth ("Sign in now (Detected)") and heroku-ops has none. */
   val routes: Routes[Ops & Settings, Response] =
-    (server.mcpStatelessRoutes @@ StaticBearer.aspect[Settings]: token =>
-      ZIO.serviceWith[Settings](s => Secrets.mcpAuthorized(token, s.opsSecret))) @@ McpRequestLog.aspect
+    (server.mcpStatelessRoutes @@ StaticBearer.aspect[Settings](
+      token => ZIO.serviceWith[Settings](s => Secrets.mcpAuthorized(token, s.opsSecret)),
+      open = StaticBearer.Handshake,
+    )) @@ McpRequestLog.aspect
