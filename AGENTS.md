@@ -71,3 +71,7 @@ What the data showed:
 
 - Effects are written with for-comprehensions, not `zio-direct`. The codebase is small and `zio-direct` isn't a dependency yet; adopt it when the effectful code grows.
 - Logs are ZIO's default text format, not JSON (DESIGN.md 13 in the factory repo). Switch to JSON logging, as in javadoccentral's `AppLogging`, before heroku-ops watches itself.
+
+## Drain failure experiment (2026-11-03, temporary)
+
+Question: what does Logplex do with a log drain that answers 500? (Retries, redelivers the same frame, backs off, disables the drain, or tells the app with an L10 line?) The answer decides whether the fallback channel can be a deliberate error response (Heroku's failed-requests alert). With the config var `DRAIN_STATUS=500`, `POST /drain` processes the batch as usual and then answers 500; unset it to go back to 204. Each drain request logs `drain app= frame= msgs= bytes= outcome= status= ua=`: the same `frame` twice means Logplex redelivered it. Remove the experiment (the setting and the log line) once the question is answered.
