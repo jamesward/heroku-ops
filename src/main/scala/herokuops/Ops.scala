@@ -10,8 +10,8 @@ enum Outcome derives CanEqual:
 
 /** `drainStatus` is what an accepted log batch is answered with: 204 normally. EXPERIMENT (see AGENTS.md "Drain failure experiment"):
   * set the config var `DRAIN_STATUS=500` to answer 500 after processing the batch as usual, to see what Logplex does with a failing
-  * drain; unset it to go back. */
-final case class Settings(factoryUrl: String, opsSecret: String, drainStatus: Status = Status.NoContent)
+  * drain; unset it to go back. `DRAIN_RETRY_AFTER` (seconds or an HTTP date) adds a `Retry-After` header to that answer. */
+final case class Settings(factoryUrl: String, opsSecret: String, drainStatus: Status = Status.NoContent, drainRetryAfter: Option[String] = None)
 
 object Settings:
   val DefaultFactoryUrl = "https://raw.githubusercontent.com/jamesward/projects/main/FACTORY.md"
@@ -21,7 +21,8 @@ object Settings:
       secret <- System.env("OPS_SECRET").orDie.someOrFail("OPS_SECRET is not set")
       url <- System.env("FACTORY_URL").orDie
       status <- System.env("DRAIN_STATUS").orDie.map(_.flatMap(_.toIntOption).map(Status.fromInt).getOrElse(Status.NoContent))
-    yield Settings(url.getOrElse(DefaultFactoryUrl), secret, status)
+      retryAfter <- System.env("DRAIN_RETRY_AFTER").orDie
+    yield Settings(url.getOrElse(DefaultFactoryUrl), secret, status, retryAfter)
 
 /** Receives what the apps send, keeps the rolling counters and fires an app's routine when the detector says so. */
 final case class Ops(state: Ref[OpsState], client: Client, settings: Settings):

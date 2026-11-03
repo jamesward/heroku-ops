@@ -36,17 +36,17 @@ object HerokuOpsSpec extends ZIOSpecDefault:
         body <- response.body.asString
       yield assertTrue(response.status.code == 200, body.contains("\"status\":\"ok\""), body.contains("\"watchedApps\":1"))
     },
-    test("DRAIN_STATUS makes an accepted batch answer with that status, after processing it like any other") {
+    test("DRAIN_STATUS (and DRAIN_RETRY_AFTER) make an accepted batch answer with that status, after processing it like any other") {
       val auth = Header.Authorization.Basic("drain", Secrets.derive(master, Secrets.Kind.Drain, app))
       val line = "<190>1 2026-11-03T20:00:00+00:00 host heroku router - at=info method=GET path=\"/\" host=x request_id=r fwd=\"1.2.3.4\" dyno=web.1 connect=0ms service=5ms status=200 bytes=10 protocol=https"
       val req = Request.post(URL(Path.root / "drain").addQueryParam("app", app.value), Body.fromString(s"${line.length} $line")).addHeader(auth)
       for
         _ <- setup
         ops <- ZIO.service[Ops]
-        failing = OpsRoutes.routes.provideEnvironment(ZEnvironment(ops.copy(settings = ops.settings.copy(drainStatus = Status.InternalServerError))))
+        failing = OpsRoutes.routes.provideEnvironment(ZEnvironment(ops.copy(settings = ops.settings.copy(drainStatus = Status.ServiceUnavailable, drainRetryAfter = Some("30")))))
         res <- failing.runZIO(req)
         s <- ops.state.get
-      yield assertTrue(res.status.code == 500, s.stats.drainBatches == 1L, s.stats.logLines == 1L)
+      yield assertTrue(res.status.code == 503, res.rawHeader("Retry-After").contains("30"), s.stats.drainBatches == 1L, s.stats.logLines == 1L)
     },
     test("/health is a 503 listing incidents that could not be delivered in the last day, and 200 again after that") {
       for
