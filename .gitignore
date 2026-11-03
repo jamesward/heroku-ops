@@ -1,0 +1,8 @@
+/target/
+/project/project/
+/project/target/
+/.idea/
+/.bsp/
+
+# Agent Skills extracted by the build
+/.kiro/skills/
