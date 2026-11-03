@@ -22,6 +22,7 @@ jobs:
       - name: Check /health and keep the issue in step with it
         env:
           GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
           HEALTH_URL: https://jw-heroku-ops-bd1ee276f8be.herokuapp.com/health
         run: |
           set -u
