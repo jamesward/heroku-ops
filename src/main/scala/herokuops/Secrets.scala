@@ -28,6 +28,12 @@ object Secrets:
 
   def mcpAuthorized(presented: String, master: String): Boolean = same(presented, mcpToken(master))
 
+  /** The secret path segment of the MCP URL for clients that can't send a header (claude.ai connectors). */
+  def mcpUrlToken(master: String): String =
+    hmac(master.getBytes(UTF_8), "mcp-url".getBytes(UTF_8)).map(b => f"${b & 0xff}%02x").mkString
+
+  def mcpUrlAuthorized(presented: String, master: String): Boolean = same(presented, mcpUrlToken(master))
+
   private def same(a: String, b: String): Boolean =
     MessageDigest.isEqual(a.getBytes(UTF_8), b.getBytes(UTF_8))
 
