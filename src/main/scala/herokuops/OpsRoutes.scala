@@ -8,8 +8,6 @@ import zio.schema.codec.JsonCodec.schemaBasedBinaryCodec
 import java.lang.management.ManagementFactory
 import java.time.Instant
 
-final case class UndeliveredOut(app: String, at: Instant, conditions: List[String], why: String) derives Schema
-
 final case class Health(
     status: String,
     startedAt: Instant,
@@ -32,23 +30,6 @@ object OpsRoutes:
     case Outcome.UnknownApp   => Response.status(Status.NotFound)
     case Outcome.Unauthorized => Response.status(Status.Unauthorized)
 
-  /** One line per drain request, for the drain failure experiment: what Logplex sent (its frame id and message count identify a
-    * batch, so a redelivery shows up as the same frame id twice) and what we answered. */
-  def drainRequestLine(req: Request, bytes: Int, outcome: Outcome, status: Status, retryAfter: Option[String]): String =
-    def h(name: String) = req.rawHeader(name).getOrElse("-")
-    s"drain app=${req.queryParam("app").getOrElse("-")} frame=${h("Logplex-Frame-Id")} msgs=${h("Logplex-Msg-Count")} bytes=$bytes " +
-      s"outcome=$outcome status=${status.code} ra=${retryAfter.getOrElse("-")} ua=${h("User-Agent").take(30)}"
-
-  /** Incidents that could not be handed to the app's routine in the last day. While there are any, `/health` answers 503: the
-    * GitHub Actions job `watch.yml` polls it and opens an issue, which GitHub emails to the owner. It is the one channel that doesn't
-    * go through a routine. */
-  val UndeliveredWindow: java.time.Duration = java.time.Duration.ofHours(24)
-
-  def undelivered(s: OpsState, now: Instant): List[UndeliveredOut] =
-    s.incidents.toList.reverse.collect:
-      case IncidentRecord(at, app, reasons, _, Delivery.Undelivered(why)) if at.isAfter(now.minus(UndeliveredWindow)) =>
-        UndeliveredOut(app.value, at, reasons.map(r => s"${r.signal.toString.toLowerCase} x${r.count}"), why)
-
   private val health: ZIO[Ops, Nothing, Response] =
     for
       ops <- ZIO.service[Ops]
@@ -56,31 +37,32 @@ object OpsRoutes:
       now <- Clock.instant
       rt = java.lang.Runtime.getRuntime
       mb = 1024L * 1024
-      late = undelivered(s, now).take(10)
-    yield Response(
-      status = if late.isEmpty then Status.Ok else Status.ServiceUnavailable,
-      body = Body.from(Health(
-        if late.isEmpty then "ok" else "degraded",
-        Instant.ofEpochMilli(ManagementFactory.getRuntimeMXBean.getStartTime), s.configLoadedAt, s.watched.size,
-        s.stats.drainBatches, s.stats.logLines, s.stats.rejected, s.stats.hooks, s.stats.fires, s.stats.fireFailures,
-        (rt.totalMemory - rt.freeMemory) / mb, rt.maxMemory / mb, late,
-      )),
-    )
+      late = Alarm.undelivered(s, now, Alarm.Listed).take(10)
+    yield Response(body = Body.from(Health(
+      if late.isEmpty then "ok" else "degraded",
+      Instant.ofEpochMilli(ManagementFactory.getRuntimeMXBean.getStartTime), s.configLoadedAt, s.watched.size,
+      s.stats.drainBatches, s.stats.logLines, s.stats.rejected, s.stats.hooks, s.stats.fires, s.stats.fireFailures,
+      (rt.totalMemory - rt.freeMemory) / mb, rt.maxMemory / mb, late,
+    )))
+
+  /** 503 while the alarm is on (see `Alarm`), 200 otherwise. Nothing else requests it but heroku-ops itself. */
+  private val alarm: ZIO[Ops, Nothing, Response] =
+    for
+      ops <- ZIO.service[Ops]
+      s <- ops.state.get
+      now <- Clock.instant
+      late = Alarm.active(s, now).take(10)
+    yield Response(status = if late.isEmpty then Status.Ok else Status.ServiceUnavailable, body = Body.from(late))
 
   val routes: Routes[Ops, Response] = Routes(
     Method.GET / "health" -> handler(health),
+    Method.GET / "alarm" -> handler(alarm),
     Method.POST / "drain" -> handler: (req: Request) =>
       for
         ops <- ZIO.service[Ops]
         body <- req.body.asArray.orElseFail(Response.badRequest)
         outcome <- ops.drain(req.queryParam("app"), req.rawHeader("Authorization"), body)
-        res = outcome match
-          case Outcome.Accepted =>
-            val ok = Response.status(ops.settings.drainStatus)
-            ops.settings.drainRetryAfter.fold(ok)(v => ok.addHeader("Retry-After", v))
-          case other            => response(other)
-        _ <- ZIO.logInfo(drainRequestLine(req, body.length, outcome, res.status, res.rawHeader("Retry-After")))
-      yield res,
+      yield response(outcome),
     Method.POST / "hook" -> handler: (req: Request) =>
       for
         ops <- ZIO.service[Ops]

@@ -19,6 +19,8 @@ object HerokuOps extends ZIOAppDefault:
       _ <- ops.refreshConfig.schedule(Schedule.fixed(5.minutes)).forkScoped
       _ <- ops.probeAll.schedule(Schedule.fixed(1.minute)).forkScoped
       _ <- ops.evaluateAll.schedule(Schedule.fixed(30.seconds)).forkScoped
+      alarmOn <- Ref.make(false)
+      _ <- ops.alarmTick(alarmOn).schedule(Schedule.fixed(1.second)).forkScoped
     yield ()
 
   def run =
