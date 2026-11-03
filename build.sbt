@@ -7,7 +7,7 @@ lazy val root = (project in file(".")).dependsOn(
   Option.when(useLocal)(RootProject(localMcp): ClasspathDep[ProjectReference]).toSeq*
 )
 
-libraryDependencies ++= Option.unless(useLocal)("com.jamesward" %% "zio-http-mcp" % "0.12.0").toSeq
+libraryDependencies ++= Option.unless(useLocal)("com.jamesward" %% "zio-http-mcp" % "0.12.1").toSeq
 
 enablePlugins(JavaAppPackaging)
 
