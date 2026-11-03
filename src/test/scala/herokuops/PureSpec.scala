@@ -174,6 +174,22 @@ object PureSpec extends ZIOSpecDefault:
         assertTrue(a1.nonEmpty, a3.isEmpty, a5.nonEmpty)
       },
     ),
+    suite("McpRequestLog")(
+      test("describes an initialize, a tool call, a notification and junk without ever logging the token") {
+        val init = McpRequestLog.line("POST", Some("Claude-User/1.0"), false, Some("2025-11-25"),
+          """{"jsonrpc":"2.0","id":7,"method":"initialize","params":{}}""")
+        val call = McpRequestLog.line("POST", None, true, None,
+          """{"jsonrpc":"2.0","id":"a","method":"tools/call","params":{"name":"list_apps","arguments":{}}}""")
+        val note = McpRequestLog.line("POST", None, true, None, """{"jsonrpc":"2.0","method":"notifications/initialized"}""")
+        val junk = McpRequestLog.line("GET", Some("x\ny"), false, None, "")
+        assertTrue(
+          init.contains("rpc=initialize"), init.contains("auth=none"), init.contains("ua=Claude-User/1.0"), init.contains("protocol=2025-11-25"),
+          call.contains("rpc=tools/call"), call.contains("tool=list_apps"), call.contains("auth=sent"),
+          note.contains("rpc=notifications/initialized"), note.contains("id=-"),
+          junk.contains("rpc=-"), junk.contains("ua=x y"),
+        )
+      },
+    ),
     suite("IncidentText")(
       test("says it is data, names the app and quotes samples") {
         val at = Instant.parse("2026-11-03T05:41:00Z")
