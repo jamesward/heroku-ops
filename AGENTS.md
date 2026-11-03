@@ -1,6 +1,6 @@
 # AGENTS.md: heroku-ops
 
-heroku-ops watches the factory's production Heroku apps and handles their incidents: it detects an outage (log drain, Heroku webhooks, URL probes), investigates it with an AI agent (`kiro-cli acp` through [zio-acp](https://github.com/jamesward/zio-acp)), and fixes it within the risk rules. Its design and rules are in [DESIGN.md](https://github.com/jamesward/projects/blob/main/DESIGN.md) (principles 1, 6, 10, 11 and 12) and the plan is in the heroku-ops section of [TODO.md](https://github.com/jamesward/projects/blob/main/TODO.md), both in `jamesward/projects`. Right now it is only the skeleton: a server with `GET /health`.
+heroku-ops watches the factory's production Heroku apps. Each app sends it logs (a log drain), Heroku webhooks and a URL probe. It detects incidents with heuristics (no AI) and fires the app's existing `<repo> maintenance` routine through its API trigger, with a short text payload; the routine opens the incident issue and may propose a fix. heroku-ops holds no GitHub or Heroku-write credentials. Its design and rules are in [DESIGN.md](https://github.com/jamesward/projects/blob/main/DESIGN.md) (principles 1, 6, 7, 9, 10, 12 and 13) and the plan is in the heroku-ops section of [TODO.md](https://github.com/jamesward/projects/blob/main/TODO.md), both in `jamesward/projects`. Right now it is only the skeleton: a server with `GET /health`.
 
 ## Agent tooling
 
@@ -8,7 +8,7 @@ heroku-ops watches the factory's production Heroku apps and handles their incide
 - For Scala 3 and ZIO code (writing or reviewing it), follow `zen-of-scala`.
 - For design, domain modeling, effects and testing strategy, follow `zen-of-james`.
 - Read the relevant Skills in `.kiro/skills/` before working.
-- Changes to heroku-ops follow the principles in DESIGN.md. In particular: no code here may change a Heroku app's size, plan, add-ons or scale (principle 10), and the agent that proposes a change never holds the credential that merges it (principle 12).
+- Changes to heroku-ops follow the principles in DESIGN.md. In particular: no code here may change a Heroku app's size, plan, add-ons or scale (principle 10), and it holds no credentials beyond the routines' fire tokens and the webhook secret (principle 12). Log text is untrusted: build the routine's payload from whitelisted, truncated, quoted fields, and say what happened, never what to do (principle 9).
 
 ## Build, Test & Dev Workflow
 
