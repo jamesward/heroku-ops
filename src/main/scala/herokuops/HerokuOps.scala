@@ -1,18 +1,26 @@
 package herokuops
 
 import zio.*
-import zio.config.typesafe.*
 import zio.http.*
 
 object HerokuOps extends ZIOAppDefault:
+  /** Drain batches are small, but a busy app can send a few hundred KB at once. */
+  private val MaxRequestBytes = 2 * 1024 * 1024
 
-  override val bootstrap: ZLayer[ZIOAppArgs, Any, Any] =
-    Runtime.setConfigProvider(ConfigProvider.fromResourcePath())
+  private val serverConfig: ZLayer[Any, Nothing, Server.Config] = ZLayer.fromZIO:
+    System.envOrElse("PORT", "8080").orDie.flatMap: port =>
+      ZIO.fromOption(port.toIntOption).orDieWith(_ => IllegalStateException(s"PORT is not a number: $port"))
+    .map(Server.Config.default.port(_).disableRequestStreaming(MaxRequestBytes))
 
-  // The health check a GitHub Actions cron job calls to watch the watcher (DESIGN.md in jamesward/projects)
-  val routes: Routes[Any, Response] =
-    Routes(
-      Method.GET / "health" -> handler(Response.text("ok")),
-    )
+  private val background: ZIO[Ops & Scope, Nothing, Unit] =
+    for
+      ops <- ZIO.service[Ops]
+      _ <- ops.refreshConfig
+      _ <- ops.refreshConfig.schedule(Schedule.fixed(5.minutes)).forkScoped
+      _ <- ops.probeAll.schedule(Schedule.fixed(1.minute)).forkScoped
+      _ <- ops.evaluateAll.schedule(Schedule.fixed(30.seconds)).forkScoped
+    yield ()
 
-  def run = Server.serve(routes).provide(Server.configured())
+  def run =
+    (background *> Server.serve(OpsRoutes.routes))
+      .provide(Ops.live, Settings.live, Client.default, Server.live, serverConfig, Scope.default)

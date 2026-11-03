@@ -1,6 +1,17 @@
 # AGENTS.md: heroku-ops
 
-heroku-ops watches the factory's production Heroku apps. Each app sends it logs (a log drain), Heroku webhooks and a URL probe. It detects incidents with heuristics (no AI) and fires the app's existing `<repo> maintenance` routine through its API trigger, with a short text payload; the routine opens the incident issue and may propose a fix. heroku-ops holds no GitHub or Heroku-write credentials. Its design and rules are in [DESIGN.md](https://github.com/jamesward/projects/blob/main/DESIGN.md) (principles 1, 6, 7, 9, 10, 12 and 13) and the plan is in the heroku-ops section of [TODO.md](https://github.com/jamesward/projects/blob/main/TODO.md), both in `jamesward/projects`. Right now it is only the skeleton: a server with `GET /health`.
+heroku-ops watches the factory's production Heroku apps. Each app sends it logs (a log drain), Heroku webhooks and a URL probe. It detects incidents with heuristics (no AI) and fires the app's existing `<repo> maintenance` routine through its API trigger, with a short text payload; the routine opens the incident issue and may propose a fix. heroku-ops holds no GitHub or Heroku-write credentials. Its design and rules are in [DESIGN.md](https://github.com/jamesward/projects/blob/main/DESIGN.md) (principles 1, 6, 7, 9, 10, 12 and 13) and the plan is in the heroku-ops section of [TODO.md](https://github.com/jamesward/projects/blob/main/TODO.md), both in `jamesward/projects`. 
+
+## What it does now
+
+- `POST /drain?app=<app>` receives a Heroku HTTPS log drain (octet-counted syslog frames), checked with Basic auth `drain:<secret>`.
+- `POST /hook?app=<app>` receives app webhooks (release, build, dyno), checked with the `Heroku-Webhook-Hmac-SHA256` signature.
+- The secrets are HMACs of `OPS_SECRET` per app and kind (`Secrets`), the same derivation as `factory-heroku.py` in the factory repo.
+- `GET /health` reports counters and heap use as JSON.
+- The watched apps come from the "Watched Heroku apps" table in the factory's FACTORY.md (`FACTORY_URL`, default the raw file on `main`), refreshed every 5 minutes; the last good list is kept if a refresh fails. An app's routine id comes from the same file's schedule tables.
+- Heuristics (`Classifier`, `Detector`) turn log lines, webhooks and probes into alerts. The per-app counters are rolling and in memory only. A restart forgets them.
+- An alert fires the app's routine (`Fire`) with the token in the config var `FIRE_TOKEN_<APP>` (upper case, `-` as `_`). If it can't (no token, no routine, an HTTP error, more than 10 fires an hour), it logs an error with `incident not delivered`. The real fallback channel is still to be chosen (TODO.md in the factory repo).
+- Config vars on the Heroku app: `OPS_SECRET` (required), `FIRE_TOKEN_<APP>` per watched app, `FACTORY_URL` (optional).
 
 ## Agent tooling
 
@@ -29,4 +40,5 @@ heroku-ops watches the factory's production Heroku apps. Each app sends it logs 
 
 ## Exceptions
 
-None.
+- Effects are written with for-comprehensions, not `zio-direct`. The codebase is small and `zio-direct` isn't a dependency yet; adopt it when the effectful code grows.
+- Logs are ZIO's default text format, not JSON (DESIGN.md 13 in the factory repo). Switch to JSON logging, as in javadoccentral's `AppLogging`, before heroku-ops watches itself.

@@ -2,6 +2,8 @@ enablePlugins(JavaAppPackaging)
 
 name := "heroku-ops"
 
+Compile / mainClass := Some("herokuops.HerokuOps")
+
 scalaVersion := "3.10.0"
 
 scalacOptions ++= Seq(
@@ -14,7 +16,6 @@ val zioVersion = "2.1.27"
 
 libraryDependencies ++= Seq(
   "dev.zio"   %% "zio"                 % zioVersion,
-  "dev.zio"   %% "zio-config-typesafe" % "4.1.0",
   "dev.zio"   %% "zio-http"            % "3.11.6",
   "org.slf4j"  % "slf4j-simple"        % "2.0.20",
   "dev.zio"   %% "zio-test"            % zioVersion % Test,
