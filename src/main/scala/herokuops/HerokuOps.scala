@@ -1,3 +1,5 @@
+package herokuops
+
 import zio.*
 import zio.config.typesafe.*
 import zio.http.*
