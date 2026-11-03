@@ -36,6 +36,24 @@ object HerokuOpsSpec extends ZIOSpecDefault:
         body <- response.body.asString
       yield assertTrue(response.status.code == 200, body.contains("\"status\":\"ok\""), body.contains("\"watchedApps\":1"))
     },
+    test("/health is a 503 listing incidents that could not be delivered in the last day, and 200 again after that") {
+      for
+        _ <- setup
+        now <- Clock.instant
+        fresh = IncidentRecord(now.minusSeconds(60), app, List(Reason(Signal.Memory, 5)), Nil, Delivery.Undelivered("no FIRE_TOKEN_WEBJARS config var"))
+        old = IncidentRecord(now.minusSeconds(3L * 24 * 3600), app, List(Reason(Signal.Crash, 1)), Nil, Delivery.Undelivered("old"))
+        fired = IncidentRecord(now.minusSeconds(60), app, List(Reason(Signal.Crash, 1)), Nil, Delivery.Fired("session_x"))
+        _ <- ZIO.serviceWithZIO[Ops](_.state.update(_.incident(old).incident(fired)))
+        ok <- OpsRoutes.routes.runZIO(Request.get(URL(Path.root / "health")))
+        _ <- ZIO.serviceWithZIO[Ops](_.state.update(_.incident(fresh)))
+        degraded <- OpsRoutes.routes.runZIO(Request.get(URL(Path.root / "health")))
+        body <- degraded.body.asString
+      yield assertTrue(
+        ok.status.code == 200,
+        degraded.status.code == 503,
+        body.contains("\"status\":\"degraded\""), body.contains("no FIRE_TOKEN_WEBJARS config var"), body.contains("memory x5"), !body.contains("\"old\""),
+      )
+    },
     test("a drain from an unknown app is a 404") {
       for
         _ <- setup

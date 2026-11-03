@@ -1,0 +1,55 @@
+name: Watch heroku-ops
+
+# The one alert that doesn't go through a routine. heroku-ops answers /health with 503 while an incident could not be handed to
+# its app's routine (and it is unreachable when it is down). This job keeps one needs-human issue in step with that; GitHub emails
+# the owner about an issue the Actions bot opens. Runs about every 15 minutes (GitHub may delay scheduled runs).
+on:
+  schedule:
+    - cron: '7,22,37,52 * * * *'
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
+permissions:
+  issues: write
+
+jobs:
+  health:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check /health and keep the issue in step with it
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HEALTH_URL: https://jw-heroku-ops-bd1ee276f8be.herokuapp.com/health
+        run: |
+          set -u
+          title='heroku-ops is unhealthy'
+          code=$(curl -sS -m 30 --retry 2 --retry-delay 10 -o health.json -w '%{http_code}' "$HEALTH_URL" || echo 000)
+          existing=$(gh issue list --state open --label needs-human --search "\"$title\" in:title" --json number -q '.[0].number // empty')
+          if [ "$code" = 200 ]; then
+            if [ -n "$existing" ]; then
+              gh issue close "$existing" --comment "/health answers 200 again."
+            fi
+            exit 0
+          fi
+          {
+            echo "\`GET $HEALTH_URL\` answered HTTP $code at $(date -u +%Y-%m-%dT%H:%MZ)."
+            echo
+            if [ "$code" = 503 ] && jq -e . health.json >/dev/null 2>&1; then
+              echo "heroku-ops could not hand these incidents to the app's routine in the last 24 hours:"
+              echo
+              jq -r '.undelivered[] | "- **\(.app)** at \(.at): \(.conditions | join(", ")). Why: \(.why)"' health.json
+            else
+              echo "No usable answer: heroku-ops is down, restarting or unreachable. Check \`heroku logs -a jw-heroku-ops\`."
+            fi
+            echo
+            echo "Opened and kept current by \`.github/workflows/watch.yml\`; it closes this issue when \`/health\` answers 200."
+          } > body.md
+          if [ -n "$existing" ]; then
+            gh issue edit "$existing" --body-file body.md
+          else
+            gh label create needs-human --color B60205 --description "Needs a maintainer decision" 2>/dev/null || true
+            gh issue create --title "$title" --label needs-human --body-file body.md
+          fi
