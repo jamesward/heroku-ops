@@ -6,6 +6,7 @@ import zio.test.*
 
 import java.nio.charset.StandardCharsets.UTF_8
 import java.util.Base64
+import scala.util.chaining.*
 
 object HerokuOpsSpec extends ZIOSpecDefault:
   private val app = AppName.parse("webjars").toOption.get
@@ -63,27 +64,45 @@ object HerokuOpsSpec extends ZIOSpecDefault:
         health2.status.code == 200, healthBody.contains("\"status\":\"degraded\""), healthBody.contains("crash x1"), !healthBody.contains("\"old\""),
       )
     },
+    test("the first request tells the app its own address; later ones don't change it") {
+      def at(host: String, proto: Option[String]) =
+        Request.get(URL(Path.root / "health")).addHeader("Host", host).pipe(r => proto.fold(r)(p => r.addHeader("X-Forwarded-Proto", p)))
+      for
+        ops <- ZIO.service[Ops]
+        before <- ops.ownUrl.get
+        _ <- OpsRoutes.routes.runZIO(at("jw-heroku-ops-bd1ee276f8be.herokuapp.com", Some("https")))
+        first <- ops.ownUrl.get
+        _ <- OpsRoutes.routes.runZIO(at("elsewhere.example.com", Some("https")))
+        second <- ops.ownUrl.get
+      yield assertTrue(
+        before.isEmpty, first.contains("https://jw-heroku-ops-bd1ee276f8be.herokuapp.com"), second == first,
+        Alarm.ownUrl(Some("a.b-c.com:8080"), None).contains("http://a.b-c.com:8080"),
+        Alarm.ownUrl(Some("evil.com/x?y"), Some("https")).isEmpty, Alarm.ownUrl(Some("a.com"), Some("javascript")).contains("http://a.com"),
+        Alarm.ownUrl(None, Some("https")).isEmpty,
+      )
+    },
     test("alarmTick requests the app's own /alarm only while an undelivered incident is recent") {
       for
         hits <- Ref.make(0)
         stub = Routes(Method.GET / "alarm" -> handler(hits.update(_ + 1).as(Response.status(Status.ServiceUnavailable))))
         port <- Server.install(stub)
         ops <- ZIO.service[Ops]
-        own = ops.copy(settings = ops.settings.copy(publicUrl = Some(s"http://localhost:$port")))
+        _ <- ops.ownUrl.set(Some(s"http://localhost:$port"))
         active <- Ref.make(false)
         now <- Clock.instant
-        _ <- own.alarmTick(active)
+        _ <- ops.alarmTick(active)
         before <- hits.get
         _ <- ops.state.update(_.incident(IncidentRecord(now.minusSeconds(10), app, List(Reason(Signal.Crash, 1)), Nil, Delivery.Undelivered("no token"))))
-        _ <- own.alarmTick(active) *> own.alarmTick(active)
+        _ <- ops.alarmTick(active) *> ops.alarmTick(active)
         during <- hits.get
         on <- active.get
         _ <- ops.state.update(_.copy(incidents = Vector.empty))
-        _ <- own.alarmTick(active)
+        _ <- ops.alarmTick(active)
         after <- hits.get
         off <- active.get
         noUrl <- Ref.make(false)
         _ <- ops.state.update(_.incident(IncidentRecord(now, app, Nil, Nil, Delivery.Undelivered("x"))))
+        _ <- ops.ownUrl.set(None)
         _ <- ops.alarmTick(noUrl)
         withoutUrl <- hits.get
       yield assertTrue(before == 0, during == 2, on, after == 2, !off, withoutUrl == 2)

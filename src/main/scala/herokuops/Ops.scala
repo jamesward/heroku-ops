@@ -8,8 +8,7 @@ import java.time.Instant
 enum Outcome derives CanEqual:
   case Accepted, UnknownApp, Unauthorized
 
-/** `publicUrl` is this app's own address (the config var `PUBLIC_URL`), which `Ops.alarmTick` requests while the alarm is on. */
-final case class Settings(factoryUrl: String, opsSecret: String, publicUrl: Option[String] = None)
+final case class Settings(factoryUrl: String, opsSecret: String)
 
 object Settings:
   val DefaultFactoryUrl = "https://raw.githubusercontent.com/jamesward/projects/main/FACTORY.md"
@@ -18,11 +17,10 @@ object Settings:
     for
       secret <- System.env("OPS_SECRET").orDie.someOrFail("OPS_SECRET is not set")
       url <- System.env("FACTORY_URL").orDie
-      publicUrl <- System.env("PUBLIC_URL").orDie
-    yield Settings(url.getOrElse(DefaultFactoryUrl), secret, publicUrl.map(_.stripSuffix("/")))
+    yield Settings(url.getOrElse(DefaultFactoryUrl), secret)
 
 /** Receives what the apps send, keeps the rolling counters and fires an app's routine when the detector says so. */
-final case class Ops(state: Ref[OpsState], client: Client, settings: Settings):
+final case class Ops(state: Ref[OpsState], client: Client, settings: Settings, ownUrl: Ref[Option[String]]):
   private def lookup(param: Option[String]): UIO[Option[(AppName, Watched)]] =
     state.get.map(s => param.flatMap(AppName.parse(_).toOption).flatMap(a => s.watched.get(a).map(a -> _)))
 
@@ -88,18 +86,19 @@ final case class Ops(state: Ref[OpsState], client: Client, settings: Settings):
     .catchAllCause(c => ZIO.logWarningCause("could not refresh the watched apps; keeping the last good list", c))
 
   /** While an undelivered incident is recent, requests this app's own public `/alarm` (503), through the Heroku router, so the app's
-    * failed-request alert fires (see `Alarm`). `active` holds whether the last tick had the alarm on, to log only the changes. */
+    * failed-request alert fires (see `Alarm`). The address is the one the first request arrived on (`OpsRoutes.routes`). `active` holds whether the last tick had the alarm on, to log only the changes. */
   def alarmTick(active: Ref[Boolean]): UIO[Unit] =
     for
       s <- state.get
       now <- Clock.instant
       late = Alarm.active(s, now)
       on = late.nonEmpty
+      url <- ownUrl.get
       was <- active.getAndSet(on)
       _ <- ZIO.logWarning(s"alarm on: ${late.map(l => s"${l.app} (${l.why})").mkString("; ")}" +
-        (if settings.publicUrl.isEmpty then "; PUBLIC_URL is not set, so nothing requests /alarm" else "")).when(on && !was)
+        (if url.isEmpty then "; no request has told this app its own address yet, so nothing requests /alarm" else "")).when(on && !was)
       _ <- ZIO.logInfo("alarm off").when(!on && was)
-      _ <- ZIO.foreachDiscard(settings.publicUrl.filter(_ => on)): base =>
+      _ <- ZIO.foreachDiscard(url.filter(_ => on)): base =>
         ZIO.fromEither(URL.decode(base + "/alarm")).flatMap(url => client.batched(Request.get(url)))
           .timeout(5.seconds).ignore
     yield ()
@@ -148,4 +147,5 @@ object Ops:
       state <- Ref.make(OpsState.empty)
       client <- ZIO.service[Client]
       settings <- ZIO.service[Settings]
-    yield Ops(state, client, settings)
+      ownUrl <- Ref.make(Option.empty[String])
+    yield Ops(state, client, settings, ownUrl)

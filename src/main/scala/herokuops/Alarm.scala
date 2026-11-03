@@ -24,4 +24,10 @@ object Alarm:
       case IncidentRecord(at, app, reasons, _, Delivery.Undelivered(why)) if at.isAfter(now.minus(within)) =>
         UndeliveredOut(app.value, at, reasons.map(r => s"${r.signal.toString.toLowerCase} x${r.count}"), why)
 
+  /** This app's own address as an incoming request names it: the Heroku router sends `Host` (only a host the app is mapped to
+    * reaches the app) and `X-Forwarded-Proto`. */
+  def ownUrl(host: Option[String], proto: Option[String]): Option[String] =
+    host.filter(h => h.nonEmpty && h.length <= 255 && h.forall(c => c.isLetterOrDigit || c == '.' || c == '-' || c == ':')).map: h =>
+      s"${proto.filter(p => p == "http" || p == "https").getOrElse("http")}://$h"
+
   def active(s: OpsState, now: Instant): List[UndeliveredOut] = undelivered(s, now, AlarmFor)

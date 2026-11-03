@@ -54,7 +54,7 @@ object OpsRoutes:
       late = Alarm.active(s, now).take(10)
     yield Response(status = if late.isEmpty then Status.Ok else Status.ServiceUnavailable, body = Body.from(late))
 
-  val routes: Routes[Ops, Response] = Routes(
+  private val tables: Routes[Ops, Response] = Routes(
     Method.GET / "health" -> handler(health),
     Method.GET / "alarm" -> handler(alarm),
     Method.POST / "drain" -> handler: (req: Request) =>
@@ -70,3 +70,11 @@ object OpsRoutes:
         outcome <- ops.hook(req.queryParam("app"), req.rawHeader("Heroku-Webhook-Hmac-SHA256"), body)
       yield response(outcome),
   )
+
+  /** Remembers the address of the first request, which is how `Ops.alarmTick` learns where to request `/alarm`. */
+  private val learnOwnUrl: HandlerAspect[Ops, Unit] =
+    HandlerAspect.interceptIncomingHandler(Handler.fromFunctionZIO[Request]: req =>
+      ZIO.serviceWithZIO[Ops]: ops =>
+        ops.ownUrl.update(_.orElse(Alarm.ownUrl(req.rawHeader("Host"), req.rawHeader("X-Forwarded-Proto")))).as((req, ())))
+
+  val routes: Routes[Ops, Response] = tables @@ learnOwnUrl
