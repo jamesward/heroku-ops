@@ -4,6 +4,7 @@ import zio.test.*
 
 import java.nio.charset.StandardCharsets.UTF_8
 import java.time.Instant
+import scala.util.chaining.*
 
 object PureSpec extends ZIOSpecDefault:
   private def frame(msg: String): String = s"${msg.getBytes(UTF_8).length} $msg"
@@ -49,6 +50,9 @@ object PureSpec extends ZIOSpecDefault:
           sig("at=error code=H12 desc=\"Request timeout\" method=GET path=\"/x\" status=503") == List(Signal.Timeout),
           sig("at=error code=H10 desc=\"App crashed\" method=GET path=\"/\" status=503") == List(Signal.Crash),
           sig("at=error code=H13 method=GET path=\"/\"") == List(Signal.RouterError),
+          sig("at=error code=H21 method=GET path=\"/\"") == List(Signal.RouterError),
+          sig("at=error code=H15 desc=\"Idle connection\" method=GET path=\"/_kyo/ws\"").isEmpty,
+          sig("at=error code=H27 method=GET path=\"/\"").isEmpty,
           sig("at=info method=GET path=\"/\" status=502") == List(Signal.ServerError),
           sig("at=info method=GET path=\"/\" status=200").isEmpty,
         )
@@ -62,8 +66,9 @@ object PureSpec extends ZIOSpecDefault:
           sig("Error R14 (Memory quota exceeded)") == List(Signal.Memory),
           sig("Error R15 (Memory quota vastly exceeded)") == List(Signal.Crash),
           sig("State changed from up to crashed") == List(Signal.Crash),
-          sig("Process exited with status 137") == List(Signal.Crash),
+          sig("Process exited with status 1").isEmpty,
           sig("Process exited with status 143").isEmpty,
+          sig("Stopping all processes with SIGTERM").isEmpty,
           sig("State changed from starting to up").isEmpty,
         )
       },
@@ -134,7 +139,12 @@ object PureSpec extends ZIOSpecDefault:
         def load(errors: Int, ok: Int) =
           val e = (1 to errors).foldLeft(Detector.empty)((s, _) => Detector.record(s, Event.Observed(Signal.ServerError, "502"), t0))
           (1 to ok).foldLeft(e)((s, _) => Detector.record(s, Event.Request, t0))
-        assertTrue(Detector.evaluate(app, load(10, 1000), t0)._2.isEmpty, Detector.evaluate(app, load(10, 50), t0)._2.nonEmpty)
+        assertTrue(
+          Detector.evaluate(app, load(4, 10), t0)._2.isEmpty,
+          Detector.evaluate(app, load(5, 1000), t0)._2.isEmpty,
+          Detector.evaluate(app, load(10, 1000), t0)._2.nonEmpty,
+          Detector.evaluate(app, load(5, 100), t0)._2.nonEmpty,
+        )
       },
       test("three failed probes mean down; two good ones mean up") {
         val down = (1 to 3).foldLeft(Detector.empty)((s, _) => Detector.probe(s, false))
@@ -142,14 +152,26 @@ object PureSpec extends ZIOSpecDefault:
         val up = (1 to 2).foldLeft(down)((s, _) => Detector.probe(s, true))
         assertTrue(down.down, Detector.evaluate(app, down, t0)._2.exists(_.reasons.map(_.signal) == List(Signal.ProbeDown)), !up.down)
       },
-      test("after the cooldown a persisting problem alerts again") {
+      test("a condition that never clears alerts once, then again after a day") {
+        val t0 = Instant.parse("2026-11-03T00:00:00Z")
+        val steps = (0 to 25 * 6).map(i => t0.plusSeconds(i * 600L))
+        val fired = steps.foldLeft((Detector.empty, List.empty[Long])): (acc, at) =>
+          val (s, hours) = acc
+          val (next, alert) = Detector.evaluate(app, Detector.record(s, Event.Observed(Signal.Memory, "R14"), at)
+            .pipe(Detector.record(_, Event.Observed(Signal.Memory, "R14"), at)).pipe(Detector.record(_, Event.Observed(Signal.Memory, "R14"), at)), at)
+          (next, hours ++ alert.map(_ => (at.getEpochSecond - t0.getEpochSecond) / 3600))
+        assertTrue(fired._2 == List(0L, 24L))
+      },
+      test("a condition that clears and returns alerts again only after the cooldown") {
         val t0 = Instant.parse("2026-11-03T05:00:00Z")
-        val times = List(0, 10, 31, 62).map(m => t0.plusSeconds(m * 60L))
-        val fired = times.foldLeft((Detector.empty, List.empty[Int])): (acc, at) =>
-          val (s, minutes) = acc
-          val (next, alert) = Detector.evaluate(app, Detector.record(s, Event.Observed(Signal.Crash, "c"), at), at)
-          (next, minutes ++ alert.map(_ => ((at.getEpochSecond - t0.getEpochSecond) / 60).toInt))
-        assertTrue(fired._2 == List(0, 31, 62))
+        def crash(s: AppState, min: Long) = Detector.record(s, Event.Observed(Signal.Crash, "c"), t0.plusSeconds(min * 60))
+        def eval(s: AppState, min: Long) = Detector.evaluate(app, s, t0.plusSeconds(min * 60))
+        val (s1, a1) = eval(crash(Detector.empty, 0), 0)
+        val (s2, _) = eval(s1, 10)
+        val (s3, a3) = eval(crash(s2, 15), 15)
+        val (s4, _) = eval(s3, 25)
+        val (_, a5) = eval(crash(s4, 40), 40)
+        assertTrue(a1.nonEmpty, a3.isEmpty, a5.nonEmpty)
       },
     ),
     suite("IncidentText")(

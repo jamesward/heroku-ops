@@ -3,13 +3,16 @@ package herokuops
 /** Heuristics that turn a log line into events. Detection is patterns and counts, not AI. */
 object Classifier:
   private val Pair = raw"""(\w+)=("([^"]*)"|\S*)""".r
-  private val Exit = raw"Process exited with status (\d+)".r.unanchored
   private val Crashed = raw"State changed from \w+ to crashed".r.unanchored
   private val Memory = raw"Error (R1[45]) ".r.unanchored
   private val JsonError = raw""""level"\s*:\s*"(ERROR|FATAL)"""".r.unanchored
   private val TextError = raw"\b(ERROR|FATAL)\b".r.unanchored
   private val Path = raw"""path="([^"?]*)\?[^"]*"""".r
   private val Control = raw"[\p{Cntrl}&&[^\t]]".r
+
+  /** Router errors that mean the app can't serve. The rest (H15 idle connection on a websocket, H18 and H27 a client that
+    * left, H25, H31) are routine for apps with websockets or crawlers: json-paste logs hundreds of H15 a month. */
+  private val RouterFaults = Set("H11", "H13", "H14", "H17", "H19", "H20", "H21", "H22", "H23", "H99")
 
   def logfmt(text: String): Map[String, String] =
     Pair.findAllMatchIn(text).map(m => m.group(1) -> Option(m.group(3)).getOrElse(m.group(2))).toMap
@@ -29,20 +32,22 @@ object Classifier:
   private def router(text: String): List[Event] =
     val f = logfmt(text)
     val status = f.get("status").flatMap(_.toIntOption)
-    val failure = f.get("at").filter(_ == "error").flatMap(_ => f.get("code")).map:
-      case "H10" => Signal.Crash
-      case "H12" => Signal.Timeout
-      case _     => Signal.RouterError
+    val failure = f.get("at").filter(_ == "error").flatMap(_ => f.get("code")).flatMap:
+      case "H10"                 => Some(Signal.Crash)
+      case "H12"                 => Some(Signal.Timeout)
+      case c if RouterFaults(c)  => Some(Signal.RouterError)
+      case _                     => None
     val serverError = status.filter(_ >= 500).map(_ => Signal.ServerError)
     val seen = Option.when(f.contains("method"))(Event.Request).toList
     seen ++ failure.orElse(serverError).map(observed(_, text)).toList
 
+  /** `Process exited with status N` isn't a crash by itself: json-paste exited with 1 on every SIGTERM stop (idling, deploys). Heroku
+    * writes `State changed from up to crashed` when a process dies unexpectedly. */
   private def dyno(text: String): List[Event] =
     text match
       case Memory("R15")                      => List(observed(Signal.Crash, text))
       case Memory(_)                          => List(observed(Signal.Memory, text))
       case Crashed()                          => List(observed(Signal.Crash, text))
-      case Exit(code) if code != "0" && code != "143" => List(observed(Signal.Crash, text))
       case _                                  => Nil
 
   private def app(text: String): List[Event] =

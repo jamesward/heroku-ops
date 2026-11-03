@@ -13,6 +13,32 @@ heroku-ops watches the factory's production Heroku apps. Each app sends it logs 
 - An alert fires the app's routine (`Fire`) with the token in the config var `FIRE_TOKEN_<APP>` (upper case, `-` as `_`). If it can't (no token, no routine, an HTTP error, more than 10 fires an hour), it logs an error with `incident not delivered`. The real fallback channel is still to be chosen (TODO.md in the factory repo).
 - Config vars on the Heroku app: `OPS_SECRET` (required), `FIRE_TOKEN_<APP>` per watched app, `FACTORY_URL` (optional).
 
+## Alert rules
+
+Tuned on real traffic (2026-11-03): `heroku logs -n 1500` dumps of webjars, webjars-file-service, javadocs, json-paste, semver-as-a-service and mytoolbook-api, plus Heroku's metrics API for 7 days on the three Standard-2X apps. Replay a dump through the rules with `./sbta "Test / runMain herokuops.Replay /tmp/<app>.log <app>"`.
+
+| Condition (window: 5 minutes) | Alerts at |
+|---|---|
+| Crash: `State changed from … to crashed`, H10, R15 | 1 |
+| Release or build failed (webhook) | 1 |
+| R14 memory quota exceeded | 3 (about a minute over quota) |
+| H12 request timeout | 5 |
+| Router faults H11, H13, H14, H17, H19-H23, H99 | 5 |
+| 5xx from the app | 5 and at least 1% of requests |
+| App `ERROR`/`FATAL` log lines | 10 |
+| Probe: 3 failures in a row (1 per minute) | down until 2 successes |
+
+A condition alerts when it starts, at most once per 30 minutes if it keeps flapping, and again after 24 hours if it never clears.
+
+What the data showed:
+- 5xx: none in hours of traffic on four apps, so a few is news. 4xx is 35% of webjars traffic (scanners): never alert on it.
+- Latency: webjars p99 is 0.9 s with a 50 s maximum, so a latency rule would be noisy. H12 is the timeout signal.
+- H15 (idle connection) is routine for websocket apps: json-paste logged 213 in a month. It isn't a fault.
+- `Process exited with status N` isn't a crash: json-paste exited with 1 on every SIGTERM stop. Only `State changed … to crashed` counts. Exit 143 and the daily Eco restarts are normal.
+- Memory: webjars peaks at 88% of its 1 GB quota over 7 days, file-service 83%, **javadocs was over quota in 125 of 169 hours (peak 135%, up to 402 MB swap, 17,106 R14 in 7 days)**. That is a real, standing problem. It alerts once, not every 30 minutes. A dyno-size increase is not an automatic fix (DESIGN.md 10 in the factory repo).
+- Volume: javadocs about 150 log lines a minute (109 requests), webjars about 18, so heap use here is small (48 MB used of 300 at one watched app).
+- Apps with `log-runtime-metrics` (webjars, file-service, javadocs) log `sample#memory_total` and `memory_quota` every 20 s. Not used yet (see TODO.md in the factory repo: dashboard and an early warning near the quota).
+
 ## Agent tooling
 
 - Follow the `zen-of-projects` Skill (extract with `./sbta extractSkillsJars` into the gitignored `.kiro/skills/`); this file records only project-specific facts and exceptions.

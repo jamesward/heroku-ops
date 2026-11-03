@@ -10,7 +10,8 @@ final case class AppState(
     probeFailures: Int,
     probeSuccesses: Int,
     down: Boolean,
-    lastFire: Option[Instant],
+    active: Set[Signal],
+    lastFire: Map[Signal, Instant],
 )
 
 final case class Reason(signal: Signal, count: Int)
@@ -20,7 +21,10 @@ final case class Alert(app: AppName, at: Instant, reasons: List[Reason], samples
 object Detector:
   val WindowMinutes = 5
   val KeepMinutes = 60
+  /** A condition that clears and comes back alerts again only after this long, so a flapping one doesn't fire repeatedly. */
   val Cooldown: Duration = Duration.ofMinutes(30)
+  /** A condition that never clears (javadocs has been over its memory quota for hours) alerts again only after this long. */
+  val Repeat: Duration = Duration.ofHours(24)
   val DownAfterFailures = 3
   val UpAfterSuccesses = 2
 
@@ -29,10 +33,11 @@ object Detector:
     Signal.Crash -> 1, Signal.ReleaseFailed -> 1, Signal.BuildFailed -> 1,
     Signal.Memory -> 3, Signal.Timeout -> 5, Signal.RouterError -> 5, Signal.AppError -> 10,
   )
-  private val ServerErrorMinimum = 10
-  private val ServerErrorRatio = 0.05
+  /** 5xx are rare in practice (none in hours of webjars, file-service, javadocs and semver traffic), so a few are news. */
+  private val ServerErrorMinimum = 5
+  private val ServerErrorRatio = 0.01
 
-  val empty: AppState = AppState(Map.empty, 0, 0, false, None)
+  val empty: AppState = AppState(Map.empty, 0, 0, false, Set.empty, Map.empty)
 
   private def minute(at: Instant): Long = at.getEpochSecond / 60
 
@@ -72,11 +77,15 @@ object Detector:
     val probe = Option.when(s.down)(Reason(Signal.ProbeDown, s.probeFailures))
     counted ++ server ++ probe
 
-  /** An alert when a rule fires and the app isn't in its cooldown, which also caps an app at two fires an hour. */
+  /** An alert for each condition that has just started (and hasn't alerted in the last [[Cooldown]]), or has lasted [[Repeat]]. */
   def evaluate(app: AppName, s: AppState, at: Instant): (AppState, Option[Alert]) =
-    val cooling = s.lastFire.exists(_.isAfter(at.minus(Cooldown)))
     val found = reasons(s, at)
-    if found.isEmpty || cooling then (s, None)
+    val due = found.filter: r =>
+      val last = s.lastFire.get(r.signal)
+      val onset = !s.active.contains(r.signal)
+      last.forall(l => (onset && !l.isAfter(at.minus(Cooldown))) || !l.isAfter(at.minus(Repeat)))
+    val next = s.copy(active = found.map(_.signal).toSet, lastFire = s.lastFire ++ due.map(_.signal -> at))
+    if due.isEmpty then (next, None)
     else
       val samples = window(s, at).flatMap(_.samples.values.flatten).distinct.take(5)
-      (s.copy(lastFire = Some(at)), Some(Alert(app, at, found, samples)))
+      (next, Some(Alert(app, at, due, samples)))
