@@ -22,5 +22,5 @@ object HerokuOps extends ZIOAppDefault:
     yield ()
 
   def run =
-    (background *> Server.serve(OpsRoutes.routes))
+    (background *> Server.serve(OpsRoutes.routes ++ OpsMcp.routes))
       .provide(Ops.live, Settings.live, Client.default, Server.live, serverConfig, Scope.default)

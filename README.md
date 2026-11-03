@@ -8,3 +8,5 @@ The design is in the factory's [DESIGN.md](https://github.com/jamesward/projects
 OPS_SECRET=dev PORT=8080 ./sbta run
 curl localhost:8080/health
 ```
+
+The MCP server at `/mcp` is how agents and the owner triage: `list_apps`, `app_status`, `recent_events`, `timeseries`, `incidents`, `releases`, `probe_now`, `alert_rules`. Bearer token: `OPS_SECRET=... ./factory-heroku.py --mcp-token` in the factory repo.

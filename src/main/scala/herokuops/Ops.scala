@@ -51,19 +51,26 @@ final case class Ops(state: Ref[OpsState], client: Client, settings: Settings):
               val events = results.collect { case HookResult.Observed(sig, sample) => Event.Observed(sig, sample) }
               val release = results.collectFirst { case HookResult.Released(r) => r }
               state.update: s =>
-                s.record(app, events, at).copy(releases = release.fold(s.releases)(s.releases.updated(app, _)))
+                release.fold(s.record(app, events, at))(s.record(app, events, at).released(app, _))
                   .bump(t => t.copy(hooks = t.hooks + 1))
               .as(Outcome.Accepted)
 
-  def probeResult(app: AppName, ok: Boolean): UIO[Unit] = state.update(_.probed(app, ok))
+  /** Requests the app's probe path once. A 5xx, a timeout or a connection error counts as down. */
+  def probe(w: Watched): UIO[ProbeResult] =
+    for
+      started <- Clock.nanoTime
+      status <- ZIO.fromEither(URL.decode(w.url + w.probe)).flatMap: url =>
+        client.batched(Request.get(url)).timeoutFail(new RuntimeException("probe timed out"))(10.seconds).map(r => Some(r.status.code))
+      .catchAllCause(c => ZIO.logDebugCause(s"probe failed app=${w.app.value}", c).as(None))
+      ended <- Clock.nanoTime
+      at <- Clock.instant
+    yield ProbeResult(at, status.exists(_ < 500), status, (ended - started) / 1000000)
 
-  /** Probes every watched app once. A 5xx, a timeout or a connection error counts as down. */
+  /** Probes every watched app once. */
   def probeAll: UIO[Unit] =
     state.get.flatMap: s =>
       ZIO.foreachParDiscard(s.watched.values): w =>
-        val ok = ZIO.fromEither(URL.decode(w.url + w.probe)).flatMap: url =>
-          client.batched(Request.get(url)).timeoutFail(new RuntimeException("probe timed out"))(10.seconds).map(_.status.code < 500)
-        ok.catchAllCause(c => ZIO.logDebugCause(s"probe failed app=${w.app.value}", c).as(false)).flatMap(probeResult(w.app, _))
+        probe(w).flatMap(r => state.update(x => x.probed(w.app, r.ok).copy(lastProbe = x.lastProbe.updated(w.app, r))))
 
   def refreshConfig: UIO[Unit] =
     val fetch = for
@@ -89,27 +96,32 @@ final case class Ops(state: Ref[OpsState], client: Client, settings: Settings):
         (alerts, s.copy(apps = results.map((n, r) => n -> r._1)))
       .flatMap(alerts => ZIO.foreachDiscard(alerts)(fire(_, at)))
 
+  private def record(alert: Alert, delivery: Delivery): UIO[Unit] =
+    state.update(_.incident(IncidentRecord(alert.at, alert.app, alert.reasons, alert.samples, delivery)))
+
   private def fire(alert: Alert, at: Instant): UIO[Unit] =
     state.get.flatMap: s =>
       s.watched.get(alert.app) match
         case None => ZIO.unit
-        case Some(w) if !s.mayFire(at) => unreached(alert, "global fire limit reached")
+        case Some(_) if !s.mayFire(at) => unreached(alert, "global fire limit reached")
         case Some(w) =>
-          val text = IncidentText.build(alert, w, s.releases.get(alert.app))
+          val text = IncidentText.build(alert, w, s.releases.get(alert.app).flatMap(_.headOption))
           System.env(tokenVar(alert.app)).orDie.flatMap: token =>
             (w.routine, token) match
               case (Some(id), Some(t)) =>
                 Fire.send(id, t, text).provide(ZLayer.succeed(client)).foldZIO(
                   why => state.update(_.bump(x => x.copy(fireFailures = x.fireFailures + 1))) *> unreached(alert, s"fire failed: $why"),
                   session => ZIO.logInfo(s"fired routine app=${alert.app.value} session=$session") *>
-                    state.update(x => x.bump(y => y.copy(fires = y.fires + 1)).copy(fireTimes = at :: x.fireTimes.take(50))),
+                    state.update(x => x.bump(y => y.copy(fires = y.fires + 1)).copy(fireTimes = at :: x.fireTimes.take(50))) *>
+                    record(alert, Delivery.Fired(session)),
                 )
               case (None, _) => unreached(alert, s"no routine id for ${w.repo} in FACTORY.md")
               case (_, None) => unreached(alert, s"no ${tokenVar(alert.app)} config var")
 
   /** The fallback channel for an incident the routine couldn't be told about is still to be chosen; for now it is the log. */
   private def unreached(alert: Alert, why: String): UIO[Unit] =
-    ZIO.logError(s"incident not delivered app=${alert.app.value} signals=${alert.reasons.map(_.signal)} why=$why")
+    ZIO.logError(s"incident not delivered app=${alert.app.value} signals=${alert.reasons.map(_.signal)} why=$why") *>
+      record(alert, Delivery.Undelivered(why))
 
 object Ops:
   val live: ZLayer[Client & Settings, Nothing, Ops] = ZLayer.fromZIO:

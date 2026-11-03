@@ -8,6 +8,7 @@ object Classifier:
   private val JsonError = raw""""level"\s*:\s*"(ERROR|FATAL)"""".r.unanchored
   private val TextError = raw"\b(ERROR|FATAL)\b".r.unanchored
   private val Path = raw"""path="([^"?]*)\?[^"]*"""".r
+  private val Fwd = raw"""fwd="[^"]*"""".r
   private val Control = raw"[\p{Cntrl}&&[^\t]]".r
 
   /** Router errors that mean the app can't serve. The rest (H15 idle connection on a websocket, H18 and H27 a client that
@@ -19,7 +20,7 @@ object Classifier:
 
   /** Lines are quoted into a report, so cap them, drop control characters and drop query strings. */
   def sample(text: String): String =
-    Control.replaceAllIn(Path.replaceAllIn(text, m => s"""path="${m.group(1)}""""), " ").take(300)
+    Control.replaceAllIn(Fwd.replaceAllIn(Path.replaceAllIn(text, m => s"""path="${m.group(1)}""""), "fwd=-"), " ").take(300)
 
   def classify(m: LogMessage): List[Event] =
     if m.source == "heroku" && m.proc == "router" then router(m.text)

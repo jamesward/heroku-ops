@@ -21,6 +21,13 @@ object Secrets:
   def derive(master: String, kind: Kind, app: AppName): String =
     hmac(master.getBytes(UTF_8), s"${kind.label}:${app.value}".getBytes(UTF_8)).map(b => f"${b & 0xff}%02x").mkString
 
+  /** The bearer token for the MCP endpoint: an HMAC of OPS_SECRET, so the master never leaves heroku-ops and the factory.
+    * `./factory-heroku.py --mcp-token` prints the same value. */
+  def mcpToken(master: String): String =
+    hmac(master.getBytes(UTF_8), "mcp".getBytes(UTF_8)).map(b => f"${b & 0xff}%02x").mkString
+
+  def mcpAuthorized(presented: String, master: String): Boolean = same(presented, mcpToken(master))
+
   private def same(a: String, b: String): Boolean =
     MessageDigest.isEqual(a.getBytes(UTF_8), b.getBytes(UTF_8))
 

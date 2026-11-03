@@ -29,13 +29,15 @@ object Detector:
   val UpAfterSuccesses = 2
 
   /** How many of a signal in the window raise an alert. */
-  private val Threshold: Map[Signal, Int] = Map(
+  private val Thresholds: Map[Signal, Int] = Map(
     Signal.Crash -> 1, Signal.ReleaseFailed -> 1, Signal.BuildFailed -> 1,
     Signal.Memory -> 3, Signal.Timeout -> 5, Signal.RouterError -> 5, Signal.AppError -> 10,
   )
   /** 5xx are rare in practice (none in hours of webjars, file-service, javadocs and semver traffic), so a few are news. */
-  private val ServerErrorMinimum = 5
-  private val ServerErrorRatio = 0.01
+  val ServerErrorMinimum = 5
+  val ServerErrorRatio = 0.01
+
+  def threshold(signal: Signal): Int = Thresholds(signal)
 
   val empty: AppState = AppState(Map.empty, 0, 0, false, Set.empty, Map.empty)
 
@@ -67,10 +69,15 @@ object Detector:
     val m = minute(at)
     s.buckets.collect { case (k, b) if k > m - WindowMinutes && k <= m => b }.toList
 
+  /** What is wrong right now, whether or not it has alerted. */
+  def conditions(s: AppState, at: Instant): List[Reason] = reasons(s, at)
+
+  def minuteOf(at: Instant): Long = minute(at)
+
   private def reasons(s: AppState, at: Instant): List[Reason] =
     val w = window(s, at)
     def total(sig: Signal) = w.map(_.counts.getOrElse(sig, 0)).sum
-    val counted = Threshold.toList.collect { case (sig, min) if total(sig) >= min => Reason(sig, total(sig)) }
+    val counted = Thresholds.toList.collect { case (sig, min) if total(sig) >= min => Reason(sig, total(sig)) }
     val requests = w.map(_.requests).sum
     val errors = total(Signal.ServerError)
     val server = Option.when(errors >= ServerErrorMinimum && errors.toDouble / requests.max(1) >= ServerErrorRatio)(Reason(Signal.ServerError, errors))
