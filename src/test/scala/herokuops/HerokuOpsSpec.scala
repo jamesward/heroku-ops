@@ -64,6 +64,18 @@ object HerokuOpsSpec extends ZIOSpecDefault:
         health2.status.code == 200, healthBody.contains("\"status\":\"degraded\""), healthBody.contains("crash x1"), !healthBody.contains("\"old\""),
       )
     },
+    test("every log entry made while a request is handled carries its X-Request-ID as request_id, and none is invented") {
+      def rejected(requestId: Option[String]) =
+        val r = Request.post(URL(Path.root / "drain").addQueryParam("app", app.value), Body.fromString("")).addHeader(Header.Authorization.Basic("drain", "wrong"))
+        HerokuOps.app.runZIO(requestId.fold(r)(id => r.addHeader("X-Request-ID", id)))
+      for
+        _ <- setup
+        _ <- rejected(Some("f9ed4675-f1c5-3513-c61a-3b3b4e25b4c0"))
+        _ <- rejected(None)
+        out <- ZTestLogger.logOutput
+        seen = out.filter(_.message().startsWith("drain rejected")).map(_.annotations.get("request_id"))
+      yield assertTrue(seen == Chunk(Some("f9ed4675-f1c5-3513-c61a-3b3b4e25b4c0"), None))
+    }.provideSomeLayer[Ops & Scope](ZLayer.succeed(Settings("http://unused", master))),
     test("the first request tells the app its own address; later ones don't change it") {
       def at(host: String, proto: Option[String]) =
         Request.get(URL(Path.root / "health")).addHeader("Host", host).pipe(r => proto.fold(r)(p => r.addHeader("X-Forwarded-Proto", p)))

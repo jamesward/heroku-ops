@@ -78,3 +78,7 @@ object OpsRoutes:
         ops.ownUrl.update(_.orElse(Alarm.ownUrl(req.rawHeader("Host"), req.rawHeader("X-Forwarded-Proto")))).as((req, ())))
 
   val routes: Routes[Ops, Response] = tables @@ learnOwnUrl
+
+  /** Puts the router's `X-Request-ID` on every log entry made while the request is handled (zen-of-projects "Production Servers"). */
+  val requestId: Middleware[Any] =
+    Middleware.logAnnotate((req: Request) => req.headers.get("X-Request-ID").map(LogAnnotation("request_id", _)).toSet)
