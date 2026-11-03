@@ -20,8 +20,8 @@ heroku-ops watches the factory's production Heroku apps. Each app sends it logs 
 
 ## Production
 
-- Heroku app: `jw-heroku-ops`. Scala servers use exactly the buildpacks `heroku/jvm`, then `https://github.com/jamesward/buildpack-scala` (zen-of-projects "Heroku deploys"). Record the URL here once the app is wired.
-- Deploys: Heroku GitHub auto-deploy from `main`, after CI passes. Not connected yet (the owner connects the repo in the Heroku dashboard).
+- Heroku app: `jw-heroku-ops`. Scala servers use exactly the buildpacks `heroku/jvm`, then `https://github.com/jamesward/buildpack-scala` (zen-of-projects "Heroku deploys"). URL: https://jw-heroku-ops-bd1ee276f8be.herokuapp.com (`GET /health`).
+- Deploys: Heroku GitHub auto-deploy from `main`.
 
 ## Maintenance routine
 
