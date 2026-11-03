@@ -1,6 +1,7 @@
 package herokuops
 
 import com.jamesward.ziohttp.mcp.*
+import com.jamesward.ziohttp.mcp.auth.StaticBearer
 import zio.*
 import zio.http.*
 import zio.schema.{Schema, derived}
@@ -84,7 +85,8 @@ object OpsMcp:
       .instructions(instructions)
       .tool(listApps).tool(appStatus).tool(recentEvents).tool(timeseries).tool(incidents).tool(releases).tool(probeNow).tool(alertRules)
 
-  /** The MCP endpoint, `/mcp`, behind `Authorization: Bearer <Secrets.mcpToken>`. */
+  /** The MCP endpoint, `/mcp`, behind `Authorization: Bearer <Secrets.mcpToken>`. A request without the token gets HTTP 200 and a
+    * JSON-RPC error, never a 401: claude.ai takes a 401 for OAuth ("Sign in now (Detected)") and heroku-ops has none. */
   val routes: Routes[Ops & Settings, Response] =
-    server.mcpStatelessRoutes @@ HandlerAspect.bearerAuthZIO[Settings]: token =>
-      ZIO.serviceWith[Settings](s => Secrets.mcpAuthorized(token.stringValue, s.opsSecret))
+    server.mcpStatelessRoutes @@ StaticBearer.aspect[Settings]: token =>
+      ZIO.serviceWith[Settings](s => Secrets.mcpAuthorized(token, s.opsSecret))

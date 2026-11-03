@@ -23,7 +23,7 @@ object OpsMcpSpec extends ZIOSpecDefault:
       url <- ZIO.fromEither(URL.decode("/mcp"))
       response <- OpsMcp.routes.runZIO(Request.post(url, Body.fromString(body)).addHeaders(headers))
       text <- response.body.asString
-    yield (response.status.code, text)
+    yield (response.status.code, text, response.headers.get("WWW-Authenticate"))
 
   private val seeded = ZIO.serviceWithZIO[Ops]: ops =>
     ops.state.update: s =>
@@ -31,16 +31,23 @@ object OpsMcpSpec extends ZIOSpecDefault:
         .released(app, Release(12, "Deploy abc", at.minusSeconds(600)))
 
   def spec = suite("MCP endpoint")(
-    test("no token and a wrong token are rejected") {
+    test("no token, a wrong token and the raw master are refused with a JSON-RPC error, never a 401") {
       for
-        none <- rpc("tools/list", token = None)
+        none <- rpc("initialize", token = None)
         wrong <- rpc("tools/list", token = Some("nope"))
         raw <- rpc("tools/list", token = Some(master))
-      yield assertTrue(none._1 == 401, wrong._1 == 401, raw._1 == 401)
+      yield assertTrue(
+        none._1 == 200, wrong._1 == 200, raw._1 == 200,
+        none._3.isEmpty, wrong._3.isEmpty, raw._3.isEmpty,
+        none._2.contains("\"code\":-32001"), wrong._2.contains("\"code\":-32001"), raw._2.contains("\"code\":-32001"),
+        !wrong._2.contains("\"tools\""),
+        none._2.contains("Authorization: Bearer"),
+        wrong._2.contains("was not accepted"),
+      )
     },
     test("with the derived token it lists the read-only tools") {
       for
-        (code, text) <- rpc("tools/list")
+        (code, text, _) <- rpc("tools/list")
       yield assertTrue(
         code == 200,
         List("list_apps", "app_status", "recent_events", "timeseries", "incidents", "releases", "probe_now", "alert_rules").forall(n => text.contains(s""""name":"$n"""")),
