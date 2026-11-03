@@ -25,24 +25,25 @@ object OpsMcpSpec extends ZIOSpecDefault:
       text <- response.body.asString
     yield (response.status.code, text, response.headers.get("WWW-Authenticate"))
 
+  private val initParams = """{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"t","version":"1"}}"""
+
   private val seeded = ZIO.serviceWithZIO[Ops]: ops =>
     ops.state.update: s =>
       s.copy(watched = Map(app -> w)).record(app, List(Event.Request, Event.Observed(Signal.Crash, "State changed from up to crashed")), at)
         .released(app, Release(12, "Deploy abc", at.minusSeconds(600)))
 
   def spec = suite("MCP endpoint")(
-    test("no token, a wrong token and the raw master are refused with a JSON-RPC error, never a 401") {
+    test("without a token the handshake answers like a plain server and the tools need the token: a JSON-RPC error, never a 401") {
       for
-        none <- rpc("initialize", token = None)
-        wrong <- rpc("tools/list", token = Some("nope"))
+        init <- rpc("initialize", initParams, token = None)
+        list <- rpc("tools/list", token = None)
+        wrong <- rpc("initialize", initParams, token = Some("nope"))
         raw <- rpc("tools/list", token = Some(master))
       yield assertTrue(
-        none._1 == 200, wrong._1 == 200, raw._1 == 200,
-        none._3.isEmpty, wrong._3.isEmpty, raw._3.isEmpty,
-        none._2.contains("\"code\":-32001"), wrong._2.contains("\"code\":-32001"), raw._2.contains("\"code\":-32001"),
-        !wrong._2.contains("\"tools\""),
-        none._2.contains("Authorization: Bearer"),
-        wrong._2.contains("was not accepted"),
+        init._1 == 200, init._2.contains("\"serverInfo\""), init._2.contains("\"result\""), init._3.isEmpty,
+        list._1 == 200, list._2.contains("\"code\":-32001"), !list._2.contains("\"tools\""), list._3.isEmpty,
+        wrong._1 == 200, wrong._2.contains("was not accepted"), wrong._3.isEmpty,
+        raw._1 == 200, raw._2.contains("\"code\":-32001"), !raw._2.contains("\"tools\""),
       )
     },
     test("with the derived token it lists the read-only tools") {
