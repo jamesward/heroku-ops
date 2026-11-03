@@ -63,6 +63,8 @@ What the data showed:
 
 - Heroku app: `jw-heroku-ops`. Scala servers use exactly the buildpacks `heroku/jvm`, then `https://github.com/jamesward/buildpack-scala` (zen-of-projects "Heroku deploys"). URL: https://jw-heroku-ops-bd1ee276f8be.herokuapp.com (`GET /health`).
 - Deploys: Heroku GitHub auto-deploy from `main`.
+- Logging follows the Skill's "Production Servers": JSON, one event per line (`AppLogging.json`, installed as the `bootstrap`), and the router's `X-Request-ID` as `request_id` on every entry made while a request is handled (`OpsRoutes.requestId`). Heroku Labs `log-runtime-metrics` is on.
+- The factory manages heroku-ops like every other Heroku app (it is in FACTORY.md's "Watched Heroku apps" table: webhook, probe, the `heroku-ops` MCP entry in this repo) with one exception: it has no log drain to itself. So it watches itself only through the release/build/dyno webhook and the probe of `/health`, not through its logs. What watches heroku-ops is in `TODO.md`.
 
 ## Maintenance routine
 
@@ -71,7 +73,6 @@ What the data showed:
 ## Exceptions
 
 - Effects are written with for-comprehensions, not `zio-direct`. The codebase is small and `zio-direct` isn't a dependency yet; adopt it when the effectful code grows.
-- Logs are ZIO's default text format, not JSON (DESIGN.md 13 in the factory repo). Switch to JSON logging, as in javadoccentral's `AppLogging`, before heroku-ops watches itself.
 
 ## What Logplex does with a failing drain (measured 2026-11-03)
 

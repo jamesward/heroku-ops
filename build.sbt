@@ -28,7 +28,9 @@ val zioVersion = "2.1.27"
 libraryDependencies ++= Seq(
   "dev.zio"   %% "zio"                 % zioVersion,
   "dev.zio"   %% "zio-http"            % "3.11.6",
-  "org.slf4j"  % "slf4j-simple"        % "2.0.20",
+  "dev.zio"   %% "zio-logging"         % "2.5.3",
+  // The slf4j2 bridge is the sole slf4j provider, so Netty and the other Java libraries log through ZIO's logger.
+  "dev.zio"   %% "zio-logging-slf4j2-bridge" % "2.5.3",
   "dev.zio"   %% "zio-test"            % zioVersion % Test,
   "dev.zio"   %% "zio-test-sbt"        % zioVersion % Test,
 )

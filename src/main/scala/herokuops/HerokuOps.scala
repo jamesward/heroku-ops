@@ -23,6 +23,13 @@ object HerokuOps extends ZIOAppDefault:
       _ <- ops.alarmTick(alarmOn).schedule(Schedule.fixed(1.second)).forkScoped
     yield ()
 
+  /** JSON logs (one event per line, `request_id` from the router's `X-Request-ID` on every entry made while a request is handled).
+    * Installed as the bootstrap, not with `.provide`, so the fibers the server forks inherit it. */
+  override val bootstrap = AppLogging.json
+
+  /** Every route, with the request id on its log entries. */
+  val app: Routes[Ops & Settings, Response] = (OpsRoutes.routes ++ OpsMcp.routes) @@ OpsRoutes.requestId
+
   def run =
-    (background *> Server.serve(OpsRoutes.routes ++ OpsMcp.routes))
+    (background *> Server.serve(app))
       .provide(Ops.live, Settings.live, Client.default, Server.live, serverConfig, Scope.default)
