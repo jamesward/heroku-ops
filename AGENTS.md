@@ -50,6 +50,8 @@ What the data showed:
 
 ## Build, Test & Dev Workflow
 
+- Working on `zio-http-mcp` together with this project: `./sbta shutdown`, then `./sbta -Dlocal ...` builds against the checkout at `../zio-http-mcp` instead of the published artifact (zen-of-projects "Working on a dependency from source"). Never commit it enabled, and don't commit code that needs an unreleased library API.
+
 - Validation: `./sbta "Test / compile; testFull; stage"` (no Docker or gated tests).
 - Run the server: `PORT=8080 ./sbta run`, then `curl localhost:8080/health`.
 - Use the MCP server `sbta` (this build's `./sbta --mcp`, configured in `.mcp.json` and `.kiro/settings/mcp.json`, approved in `.claude/settings.json`) for all sbt work: build, test and run with `compile`, `test` (`tests` for specific classes, `full` for all), `run`, `clean` and `publish-local`; inspect the build with `projects`, `test-names`, `main-classes`, `dependencies` and `show`. Use `sbt-task` for any other command (e.g. `reload`) and `list-tasks` to find tasks. Its tools are deferred in Claude Code: load them with ToolSearch (search `sbta`). Don't run `sbt` or `./sbta` in a shell while the MCP tools are available; if the server is unavailable, say so and fall back to `./sbta <command>`.
