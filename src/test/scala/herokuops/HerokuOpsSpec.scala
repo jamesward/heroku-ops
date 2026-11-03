@@ -36,36 +36,58 @@ object HerokuOpsSpec extends ZIOSpecDefault:
         body <- response.body.asString
       yield assertTrue(response.status.code == 200, body.contains("\"status\":\"ok\""), body.contains("\"watchedApps\":1"))
     },
-    test("DRAIN_STATUS (and DRAIN_RETRY_AFTER) make an accepted batch answer with that status, after processing it like any other") {
-      val auth = Header.Authorization.Basic("drain", Secrets.derive(master, Secrets.Kind.Drain, app))
-      val line = "<190>1 2026-11-03T20:00:00+00:00 host heroku router - at=info method=GET path=\"/\" host=x request_id=r fwd=\"1.2.3.4\" dyno=web.1 connect=0ms service=5ms status=200 bytes=10 protocol=https"
-      val req = Request.post(URL(Path.root / "drain").addQueryParam("app", app.value), Body.fromString(s"${line.length} $line")).addHeader(auth)
-      for
-        _ <- setup
-        ops <- ZIO.service[Ops]
-        failing = OpsRoutes.routes.provideEnvironment(ZEnvironment(ops.copy(settings = ops.settings.copy(drainStatus = Status.ServiceUnavailable, drainRetryAfter = Some("30")))))
-        res <- failing.runZIO(req)
-        s <- ops.state.get
-      yield assertTrue(res.status.code == 503, res.rawHeader("Retry-After").contains("30"), s.stats.drainBatches == 1L, s.stats.logLines == 1L)
-    },
-    test("/health is a 503 listing incidents that could not be delivered in the last day, and 200 again after that") {
+    test("/health lists incidents that could not be delivered in the last day but stays 200; /alarm is a 503 only for the last 30 minutes") {
+      def get(path: String) = OpsRoutes.routes.runZIO(Request.get(URL(Path.root / path)))
       for
         _ <- setup
         now <- Clock.instant
-        fresh = IncidentRecord(now.minusSeconds(60), app, List(Reason(Signal.Memory, 5)), Nil, Delivery.Undelivered("no FIRE_TOKEN_WEBJARS config var"))
+        undelivered = Delivery.Undelivered("no FIRE_TOKEN_WEBJARS config var")
+        recent = IncidentRecord(now.minusSeconds(60), app, List(Reason(Signal.Memory, 5)), Nil, undelivered)
+        hours = IncidentRecord(now.minusSeconds(3L * 3600), app, List(Reason(Signal.Crash, 1)), Nil, undelivered)
         old = IncidentRecord(now.minusSeconds(3L * 24 * 3600), app, List(Reason(Signal.Crash, 1)), Nil, Delivery.Undelivered("old"))
         fired = IncidentRecord(now.minusSeconds(60), app, List(Reason(Signal.Crash, 1)), Nil, Delivery.Fired("session_x"))
-        _ <- ZIO.serviceWithZIO[Ops](_.state.update(_.incident(old).incident(fired)))
-        ok <- OpsRoutes.routes.runZIO(Request.get(URL(Path.root / "health")))
-        _ <- ZIO.serviceWithZIO[Ops](_.state.update(_.incident(fresh)))
-        degraded <- OpsRoutes.routes.runZIO(Request.get(URL(Path.root / "health")))
-        body <- degraded.body.asString
+        state <- ZIO.serviceWith[Ops](_.state)
+        _ <- state.update(_.incident(old).incident(fired))
+        quiet <- get("alarm")
+        _ <- state.update(_.incident(hours))
+        stillQuiet <- get("alarm")
+        health1 <- get("health")
+        _ <- state.update(_.incident(recent))
+        alarming <- get("alarm")
+        alarmBody <- alarming.body.asString
+        health2 <- get("health")
+        healthBody <- health2.body.asString
       yield assertTrue(
-        ok.status.code == 200,
-        degraded.status.code == 503,
-        body.contains("\"status\":\"degraded\""), body.contains("no FIRE_TOKEN_WEBJARS config var"), body.contains("memory x5"), !body.contains("\"old\""),
+        quiet.status.code == 200, stillQuiet.status.code == 200, health1.status.code == 200,
+        alarming.status.code == 503, alarmBody.contains("memory x5"), alarmBody.contains("no FIRE_TOKEN_WEBJARS config var"), !alarmBody.contains("crash"),
+        health2.status.code == 200, healthBody.contains("\"status\":\"degraded\""), healthBody.contains("crash x1"), !healthBody.contains("\"old\""),
       )
     },
+    test("alarmTick requests the app's own /alarm only while an undelivered incident is recent") {
+      for
+        hits <- Ref.make(0)
+        stub = Routes(Method.GET / "alarm" -> handler(hits.update(_ + 1).as(Response.status(Status.ServiceUnavailable))))
+        port <- Server.install(stub)
+        ops <- ZIO.service[Ops]
+        own = ops.copy(settings = ops.settings.copy(publicUrl = Some(s"http://localhost:$port")))
+        active <- Ref.make(false)
+        now <- Clock.instant
+        _ <- own.alarmTick(active)
+        before <- hits.get
+        _ <- ops.state.update(_.incident(IncidentRecord(now.minusSeconds(10), app, List(Reason(Signal.Crash, 1)), Nil, Delivery.Undelivered("no token"))))
+        _ <- own.alarmTick(active) *> own.alarmTick(active)
+        during <- hits.get
+        on <- active.get
+        _ <- ops.state.update(_.copy(incidents = Vector.empty))
+        _ <- own.alarmTick(active)
+        after <- hits.get
+        off <- active.get
+        noUrl <- Ref.make(false)
+        _ <- ops.state.update(_.incident(IncidentRecord(now, app, Nil, Nil, Delivery.Undelivered("x"))))
+        _ <- ops.alarmTick(noUrl)
+        withoutUrl <- hits.get
+      yield assertTrue(before == 0, during == 2, on, after == 2, !off, withoutUrl == 2)
+    }.provideSomeLayer[Ops](ZLayer.succeed(Server.Config.default.onAnyOpenPort) >>> Server.live),
     test("a drain from an unknown app is a 404") {
       for
         _ <- setup

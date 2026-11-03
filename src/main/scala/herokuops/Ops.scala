@@ -8,10 +8,8 @@ import java.time.Instant
 enum Outcome derives CanEqual:
   case Accepted, UnknownApp, Unauthorized
 
-/** `drainStatus` is what an accepted log batch is answered with: 204 normally. EXPERIMENT (see AGENTS.md "Drain failure experiment"):
-  * set the config var `DRAIN_STATUS=500` to answer 500 after processing the batch as usual, to see what Logplex does with a failing
-  * drain; unset it to go back. `DRAIN_RETRY_AFTER` (seconds or an HTTP date) adds a `Retry-After` header to that answer. */
-final case class Settings(factoryUrl: String, opsSecret: String, drainStatus: Status = Status.NoContent, drainRetryAfter: Option[String] = None)
+/** `publicUrl` is this app's own address (the config var `PUBLIC_URL`), which `Ops.alarmTick` requests while the alarm is on. */
+final case class Settings(factoryUrl: String, opsSecret: String, publicUrl: Option[String] = None)
 
 object Settings:
   val DefaultFactoryUrl = "https://raw.githubusercontent.com/jamesward/projects/main/FACTORY.md"
@@ -20,9 +18,8 @@ object Settings:
     for
       secret <- System.env("OPS_SECRET").orDie.someOrFail("OPS_SECRET is not set")
       url <- System.env("FACTORY_URL").orDie
-      status <- System.env("DRAIN_STATUS").orDie.map(_.flatMap(_.toIntOption).map(Status.fromInt).getOrElse(Status.NoContent))
-      retryAfter <- System.env("DRAIN_RETRY_AFTER").orDie
-    yield Settings(url.getOrElse(DefaultFactoryUrl), secret, status, retryAfter)
+      publicUrl <- System.env("PUBLIC_URL").orDie
+    yield Settings(url.getOrElse(DefaultFactoryUrl), secret, publicUrl.map(_.stripSuffix("/")))
 
 /** Receives what the apps send, keeps the rolling counters and fires an app's routine when the detector says so. */
 final case class Ops(state: Ref[OpsState], client: Client, settings: Settings):
@@ -90,6 +87,23 @@ final case class Ops(state: Ref[OpsState], client: Client, settings: Settings):
         state.update(s => s.copy(watched = watched.map(w => w.app -> w).toMap, configLoadedAt = Some(at)))
     .catchAllCause(c => ZIO.logWarningCause("could not refresh the watched apps; keeping the last good list", c))
 
+  /** While an undelivered incident is recent, requests this app's own public `/alarm` (503), through the Heroku router, so the app's
+    * failed-request alert fires (see `Alarm`). `active` holds whether the last tick had the alarm on, to log only the changes. */
+  def alarmTick(active: Ref[Boolean]): UIO[Unit] =
+    for
+      s <- state.get
+      now <- Clock.instant
+      late = Alarm.active(s, now)
+      on = late.nonEmpty
+      was <- active.getAndSet(on)
+      _ <- ZIO.logWarning(s"alarm on: ${late.map(l => s"${l.app} (${l.why})").mkString("; ")}" +
+        (if settings.publicUrl.isEmpty then "; PUBLIC_URL is not set, so nothing requests /alarm" else "")).when(on && !was)
+      _ <- ZIO.logInfo("alarm off").when(!on && was)
+      _ <- ZIO.foreachDiscard(settings.publicUrl.filter(_ => on)): base =>
+        ZIO.fromEither(URL.decode(base + "/alarm")).flatMap(url => client.batched(Request.get(url)))
+          .timeout(5.seconds).ignore
+    yield ()
+
   private def tokenVar(app: AppName) = s"FIRE_TOKEN_${app.value.toUpperCase.replace('-', '_')}"
 
   /** Evaluates every app and fires the routine for each alert. */
@@ -123,7 +137,7 @@ final case class Ops(state: Ref[OpsState], client: Client, settings: Settings):
               case (None, _) => unreached(alert, s"no routine id for ${w.repo} in FACTORY.md")
               case (_, None) => unreached(alert, s"no ${tokenVar(alert.app)} config var")
 
-  /** The fallback channel for an incident the routine couldn't be told about is still to be chosen; for now it is the log. */
+  /** An incident the routine couldn't be told about is logged and recorded; `Alarm` makes the rest of the fallback. */
   private def unreached(alert: Alert, why: String): UIO[Unit] =
     ZIO.logError(s"incident not delivered app=${alert.app.value} signals=${alert.reasons.map(_.signal)} why=$why") *>
       record(alert, Delivery.Undelivered(why))
