@@ -84,21 +84,7 @@ object OpsMcp:
       .instructions(instructions)
       .tool(listApps).tool(appStatus).tool(recentEvents).tool(timeseries).tool(incidents).tool(releases).tool(probeNow).tool(alertRules)
 
-  /** `/mcp` behind `Authorization: Bearer <Secrets.mcpToken>`, for Claude Code, Kiro and cloud sessions (whose environment
-    * adds the header). Without a token it answers 401, which is what makes a client such as claude.ai look for OAuth. */
-  private val bearerRoutes: Routes[Ops & Settings, Response] =
+  /** The MCP endpoint, `/mcp`, behind `Authorization: Bearer <Secrets.mcpToken>`. */
+  val routes: Routes[Ops & Settings, Response] =
     server.mcpStatelessRoutes @@ HandlerAspect.bearerAuthZIO[Settings]: token =>
       ZIO.serviceWith[Settings](s => Secrets.mcpAuthorized(token.stringValue, s.opsSecret))
-
-  /** `/<Secrets.mcpUrlToken>`: the secret is the URL, for clients that can't send a header (claude.ai connectors), so there
-    * is no 401, no challenge and nothing for a client to take for OAuth. A wrong or missing token is a plain 404. */
-  private val secretPathGate: HandlerAspect[Settings, Unit] =
-    HandlerAspect.interceptIncomingHandler(Handler.fromFunctionZIO[Request]: req =>
-      val presented = req.url.path.encode.split('/').find(_.nonEmpty).getOrElse("")
-      ZIO.serviceWith[Settings](s => Secrets.mcpUrlAuthorized(presented, s.opsSecret)).flatMap: ok =>
-        if ok then ZIO.succeed((req, ())) else ZIO.fail(Response.notFound))
-
-  private val secretPathRoutes: Routes[Ops & Settings, Response] =
-    server.mountedAtParam("token").mcpStatelessRoutes @@ secretPathGate
-
-  val routes: Routes[Ops & Settings, Response] = bearerRoutes ++ secretPathRoutes
