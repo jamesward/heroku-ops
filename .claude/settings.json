@@ -1,5 +1,6 @@
 {
-  "enabledMcpjsonServers" : [
-    "sbta"
+  "enabledMcpjsonServers": [
+    "sbta",
+    "heroku-ops"
   ]
 }
