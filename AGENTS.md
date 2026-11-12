@@ -72,7 +72,7 @@ What the data showed:
 
 ## Exceptions
 
-- Effects are written with for-comprehensions, not `zio-direct`. The codebase is small and `zio-direct` isn't a dependency yet; adopt it when the effectful code grows.
+None. (Effects are written with for-comprehensions, which is now what `zen-of-scala` asks for; `zio-direct` isn't used.)
 
 ## What Logplex does with a failing drain (measured 2026-11-03)
 
