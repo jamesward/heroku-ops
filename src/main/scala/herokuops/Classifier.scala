@@ -5,7 +5,7 @@ object Classifier:
   private val Pair = raw"""(\w+)=("([^"]*)"|\S*)""".r
   private val Crashed = raw"State changed from \w+ to crashed".r.unanchored
   private val Memory = raw"Error (R1[45]) ".r.unanchored
-  private val JsonError = raw""""level"\s*:\s*"(ERROR|FATAL)"""".r.unanchored
+  private val JsonLevel = raw""""level"\s*:\s*"(\w+)"""".r.unanchored
   private val TextError = raw"\b(ERROR|FATAL)\b".r.unanchored
   private val Path = raw"""path="([^"?]*)\?[^"]*"""".r
   private val Fwd = raw"""fwd="[^"]*"""".r
@@ -51,5 +51,10 @@ object Classifier:
       case Crashed()                          => List(observed(Signal.Crash, text))
       case _                                  => Nil
 
+  /** A structured (JSON) line is an error by its own `level` only: a WARN whose cause quotes Postgres' `FATAL: …` isn't one. Plain text lines
+    * have no level field, so for them the words ERROR or FATAL count. */
   private def app(text: String): List[Event] =
-    if JsonError.findFirstIn(text).isDefined || TextError.findFirstIn(text).isDefined then List(observed(Signal.AppError, text)) else Nil
+    val isError = JsonLevel.findFirstMatchIn(text) match
+      case Some(m) => m.group(1).equalsIgnoreCase("ERROR") || m.group(1).equalsIgnoreCase("FATAL")
+      case None    => TextError.findFirstIn(text).isDefined
+    if isError then List(observed(Signal.AppError, text)) else Nil

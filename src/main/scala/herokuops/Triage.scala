@@ -23,7 +23,16 @@ final case class Apps(apps: List[AppSummary]) derives Schema
 final case class Series(app: String, points: List[MinutePoint]) derives Schema
 final case class EventOut(at: Instant, signal: String, sample: String) derives Schema
 final case class Events(app: String, events: List[EventOut]) derives Schema
-final case class IncidentOut(at: Instant, app: String, conditions: List[String], samples: List[String], delivery: String) derives Schema
+final case class AddedOut(at: Instant, conditions: List[String]) derives Schema
+final case class IncidentOut(
+    id: String,
+    at: Instant,
+    app: String,
+    conditions: List[String],
+    samples: List[String],
+    delivery: String,
+    added: List[AddedOut],
+) derives Schema
 final case class Incidents(incidents: List[IncidentOut]) derives Schema
 final case class Releases(app: String, releases: List[ReleaseOut]) derives Schema
 
@@ -74,8 +83,9 @@ object Triage:
   def incidents(s: OpsState, app: Option[String], limit: Int): Incidents =
     val all = s.incidents.reverse.filter(i => app.forall(_.equalsIgnoreCase(i.app.value)))
     Incidents(all.take(limit).toList.map: i =>
-      IncidentOut(i.at, i.app.value, i.reasons.map(describe), i.samples, i.delivery match
+      IncidentOut(i.id, i.at, i.app.value, i.reasons.map(describe), i.samples, i.delivery match
         case Delivery.Fired(session)    => s"fired the routine: $session"
-        case Delivery.Undelivered(why)  => s"not delivered: $why"))
+        case Delivery.Undelivered(why)  => s"not delivered: $why"
+      , i.added.map((at, rs) => AddedOut(at, rs.map(describe)))))
 
   def releases(s: OpsState, w: Watched): Releases = Releases(w.app.value, s.releases.getOrElse(w.app, Nil).map(release))
