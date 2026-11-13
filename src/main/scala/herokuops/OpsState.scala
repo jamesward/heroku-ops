@@ -41,6 +41,8 @@ final case class OpsState(
     lastLog: Map[AppName, Instant],
     fireTimes: List[Instant],
     stats: Stats,
+    /** When this process started: everything here (releases above all) was seen after it. */
+    since: Instant,
 ):
   def app(name: AppName): AppState = apps.getOrElse(name, Detector.empty)
 
@@ -108,4 +110,5 @@ object OpsState:
     * the same event and all writing to the same issue. Undelivered incidents don't hold this window, so a later alert can still deliver. */
   val FoldWindow: Duration = Duration.ofMinutes(30)
 
-  val empty: OpsState = OpsState(Map.empty, None, Map.empty, Map.empty, Map.empty, Vector.empty, Map.empty, Map.empty, Nil, Stats.empty)
+  def empty(since: Instant): OpsState =
+    OpsState(Map.empty, None, Map.empty, Map.empty, Map.empty, Vector.empty, Map.empty, Map.empty, Nil, Stats.empty, since)

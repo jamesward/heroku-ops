@@ -3,7 +3,7 @@ package herokuops
 import java.time.{Duration, Instant}
 
 /** Rolling per-app counters, in per-minute buckets, and the rules that turn them into an alert. Pure: the caller owns the state. */
-final case class Bucket(requests: Int, counts: Map[Signal, Int], samples: Map[Signal, List[String]])
+final case class Bucket(requests: Int, counts: Map[Signal, Int], samples: Map[Signal, List[String]], memory: Option[MemorySample] = None)
 
 final case class AppState(
     buckets: Map[Long, Bucket],
@@ -17,6 +17,7 @@ final case class AppState(
     /** Webhook `dyno crashed` reports not yet counted, held for [[Detector.ReleaseRestart]] in case a release explains them. */
     heldDynoCrashes: List[Instant] = Nil,
     lastRelease: Option[Instant] = None,
+    lastMemory: Option[MemoryReading] = None,
 )
 
 final case class Reason(signal: Signal, count: Int) derives CanEqual
@@ -61,6 +62,7 @@ object Detector:
     val b = s.buckets.getOrElse(m, noBucket)
     val updated = event match
       case Event.Request => b.copy(requests = b.requests + 1)
+      case Event.Measured(_, memory) => b.copy(memory = Some(b.memory.fold(memory)(_.max(memory))))
       case Event.Observed(sig, sample) =>
         val sameCrash = sig == Signal.Crash && s.lastCrash.exists(near(_, at, CrashLines))
         b.copy(
@@ -70,7 +72,10 @@ object Detector:
     val crashed = event match
       case Event.Observed(Signal.Crash, _) => Some(s.lastCrash.filter(_.isAfter(at)).getOrElse(at))
       case _                               => s.lastCrash
-    s.copy(buckets = (s.buckets.updated(m, updated)).filter((k, _) => k > m - KeepMinutes), lastCrash = crashed)
+    val measured = event match
+      case Event.Measured(dyno, memory) if s.lastMemory.forall(!_.at.isAfter(at)) => Some(MemoryReading(at, dyno, memory))
+      case _                                                                       => s.lastMemory
+    s.copy(buckets = (s.buckets.updated(m, updated)).filter((k, _) => k > m - KeepMinutes), lastCrash = crashed, lastMemory = measured)
 
   private def near(a: Instant, b: Instant, within: Duration): Boolean =
     !a.isBefore(b.minus(within)) && !a.isAfter(b.plus(within))

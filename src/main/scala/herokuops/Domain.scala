@@ -28,9 +28,19 @@ object RoutineId:
 enum Signal derives CanEqual:
   case Crash, Timeout, RouterError, ServerError, Memory, AppError, ProbeDown, ReleaseFailed, BuildFailed
 
+/** A `log-runtime-metrics` memory sample (`sample#memory_*`, every 20 s per dyno), in MB. */
+final case class MemorySample(total: Double, rss: Double, cache: Double, swap: Double, quota: Double) derives CanEqual:
+  /** The larger of each field: a minute's peak, across samples and dynos. */
+  def max(o: MemorySample): MemorySample =
+    MemorySample(total.max(o.total), rss.max(o.rss), cache.max(o.cache), swap.max(o.swap), quota.max(o.quota))
+
+/** The latest memory sample of an app, and the dyno (`web.1`) it came from. */
+final case class MemoryReading(at: Instant, dyno: String, sample: MemorySample)
+
 enum Event derives CanEqual:
   case Request
   case Observed(signal: Signal, sample: String)
+  case Measured(dyno: String, memory: MemorySample)
 
 final case class Watched(app: AppName, repo: String, url: String, probe: String, routine: Option[RoutineId])
 

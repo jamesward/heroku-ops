@@ -10,6 +10,8 @@ object Classifier:
   private val Path = raw"""path="([^"?]*)\?[^"]*"""".r
   private val Fwd = raw"""fwd="[^"]*"""".r
   private val Control = raw"[\p{Cntrl}&&[^\t]]".r
+  private val MemoryField = raw"sample#memory_(total|rss|cache|swap|quota)=(\d+(?:\.\d+)?)MB".r
+  private val Dyno = raw"[a-z][a-z0-9_]*\.\d{1,4}".r
 
   /** Router errors that mean the app can't serve. The rest (H15 idle connection on a websocket, H18 and H27 a client that
     * left, H25, H31) are routine for apps with websockets or crawlers: json-paste logs hundreds of H15 a month. */
@@ -24,7 +26,7 @@ object Classifier:
 
   def classify(m: LogMessage): List[Event] =
     if m.source == "heroku" && m.proc == "router" then router(m.text)
-    else if m.source == "heroku" then dyno(m.text)
+    else if m.source == "heroku" then dyno(m.proc, m.text)
     else if m.source == "app" then app(m.text)
     else Nil
 
@@ -44,12 +46,25 @@ object Classifier:
 
   /** `Process exited with status N` isn't a crash by itself: json-paste exited with 1 on every SIGTERM stop (idling, deploys). Heroku
     * writes `State changed from up to crashed` when a process dies unexpectedly. */
-  private def dyno(text: String): List[Event] =
+  private def dyno(proc: String, text: String): List[Event] =
     text match
       case Memory("R15")                      => List(observed(Signal.Crash, text))
       case Memory(_)                          => List(observed(Signal.Memory, text))
       case Crashed()                          => List(observed(Signal.Crash, text))
-      case _                                  => Nil
+      case _                                  => memory(proc, text).toList
+
+  /** `source=web.1 dyno=… sample#memory_total=505.16MB sample#memory_rss=496.36MB … sample#memory_quota=1024.00MB`, from Heroku Labs
+    * `log-runtime-metrics`. A line without all five fields isn't a memory sample. */
+  private def memory(proc: String, text: String): Option[Event] =
+    val f = MemoryField.findAllMatchIn(text).map(m => m.group(1) -> m.group(2).toDouble).toMap
+    for
+      dyno <- Option.when(Dyno.matches(proc))(proc)
+      total <- f.get("total")
+      rss <- f.get("rss")
+      cache <- f.get("cache")
+      swap <- f.get("swap")
+      quota <- f.get("quota")
+    yield Event.Measured(dyno, MemorySample(total, rss, cache, swap, quota))
 
   /** A structured (JSON) line is an error by its own `level` only: a WARN whose cause quotes Postgres' `FATAL: …` isn't one. Plain text lines
     * have no level field, so for them the words ERROR or FATAL count. */

@@ -6,6 +6,8 @@ import java.time.Instant
 
 final case class ProbeOut(at: Instant, ok: Boolean, status: Option[Int], millis: Long) derives Schema
 final case class ReleaseOut(version: Int, at: Instant, description: String) derives Schema
+final case class MemoryOut(totalMb: Double, rssMb: Double, cacheMb: Double, swapMb: Double, quotaMb: Double) derives Schema, CanEqual
+final case class MemoryReadingOut(at: Instant, dyno: String, memory: MemoryOut) derives Schema, CanEqual
 final case class AppSummary(
     app: String,
     repo: String,
@@ -16,8 +18,10 @@ final case class AppSummary(
     conditions: List[String],
     lastRelease: Option[ReleaseOut],
     routineConfigured: Boolean,
+    memory: Option[MemoryReadingOut],
 ) derives Schema
-final case class MinutePoint(minute: Instant, requests: Int, signals: Map[String, Int]) derives Schema
+/** `memory` is the minute's peak of each field, across samples and dynos, when the app logs `log-runtime-metrics`. */
+final case class MinutePoint(minute: Instant, requests: Int, signals: Map[String, Int], memory: Option[MemoryOut]) derives Schema
 final case class AppDetail(summary: AppSummary, lastMinutes: List[MinutePoint]) derives Schema
 final case class Apps(apps: List[AppSummary]) derives Schema
 final case class Series(app: String, points: List[MinutePoint]) derives Schema
@@ -34,7 +38,8 @@ final case class IncidentOut(
     added: List[AddedOut],
 ) derives Schema
 final case class Incidents(incidents: List[IncidentOut]) derives Schema
-final case class Releases(app: String, releases: List[ReleaseOut]) derives Schema
+/** `historySince` is when heroku-ops started: releases are kept in memory, so an empty list means none seen since then. */
+final case class Releases(app: String, releases: List[ReleaseOut], historySince: Instant) derives Schema
 
 /** Read-only views of what heroku-ops knows, for the MCP tools. Pure: state and the time in, data out. */
 object Triage:
@@ -45,6 +50,8 @@ object Triage:
   private def describe(r: Reason) = s"${r.signal.toString.toLowerCase} x${r.count}"
 
   private def release(r: Release) = ReleaseOut(r.version, r.at, r.description)
+
+  private def memory(m: MemorySample) = MemoryOut(m.total, m.rss, m.cache, m.swap, m.quota)
 
   def summary(s: OpsState, w: Watched, now: Instant): AppSummary =
     val st = s.app(w.app)
@@ -61,6 +68,7 @@ object Triage:
       conditions.map(describe),
       s.releases.get(w.app).flatMap(_.headOption).map(release),
       w.routine.isDefined,
+      st.lastMemory.map(m => MemoryReadingOut(m.at, m.dyno, memory(m.sample))),
     )
 
   def apps(s: OpsState, now: Instant): Apps = Apps(s.watched.values.toList.sortBy(_.app.value).map(summary(s, _, now)))
@@ -71,7 +79,8 @@ object Triage:
     ((current - minutes + 1) to current).toList.map: m =>
       val b = st.buckets.get(m)
       MinutePoint(Instant.ofEpochSecond(m * 60), b.map(_.requests).getOrElse(0),
-        b.map(_.counts.collect { case (sig, n) if n > 0 => sig.toString.toLowerCase -> n }).getOrElse(Map.empty))
+        b.map(_.counts.collect { case (sig, n) if n > 0 => sig.toString.toLowerCase -> n }).getOrElse(Map.empty),
+        b.flatMap(_.memory).map(memory))
 
   def detail(s: OpsState, w: Watched, now: Instant): AppDetail = AppDetail(summary(s, w, now), series(s, w, now, 15))
 
@@ -88,4 +97,4 @@ object Triage:
         case Delivery.Undelivered(why)  => s"not delivered: $why"
       , i.added.map((at, rs) => AddedOut(at, rs.map(describe)))))
 
-  def releases(s: OpsState, w: Watched): Releases = Releases(w.app.value, s.releases.getOrElse(w.app, Nil).map(release))
+  def releases(s: OpsState, w: Watched): Releases = Releases(w.app.value, s.releases.getOrElse(w.app, Nil).map(release), s.since)

@@ -5,10 +5,11 @@ import zio.test.*
 import java.time.Instant
 
 object TriageSpec extends ZIOSpecDefault:
+  private given CanEqual[Instant, Instant] = CanEqual.derived
   private val app = AppName.parse("webjars").toOption.get
   private val w = Watched(app, "webjars/webjars", "https://www.webjars.org", "/", None)
   private val now = Instant.parse("2026-11-03T05:41:30Z")
-  private val base = OpsState.empty.copy(watched = Map(app -> w))
+  private val base = OpsState.empty(Instant.parse("2026-11-03T04:00:00Z")).copy(watched = Map(app -> w))
 
   def spec = suite("Triage")(
     test("status: no-data, ok, degraded, down") {
@@ -41,6 +42,23 @@ object TriageSpec extends ZIOSpecDefault:
         inc.incidents.size == OpsState.IncidentsKept,
         Triage.incidents(inc, Some("webjars"), 2).incidents.head.delivery == "not delivered: n150",
       )
+    },
+    test("memory: per-minute peak across samples and dynos, and the latest reading (#22)") {
+      val a = MemorySample(505.16, 496.36, 0.62, 8.18, 1024)
+      val b = MemorySample(480, 500, 3, 0, 1024)
+      val s = base.record(app, List(Event.Measured("web.1", a)), now.minusSeconds(60))
+        .record(app, List(Event.Measured("web.1", a), Event.Measured("web.2", b)), now)
+      val points = Triage.series(s, w, now, 3)
+      assertTrue(
+        points.last.memory == Some(MemoryOut(505.16, 500, 3, 8.18, 1024)),
+        points(1).memory == Some(MemoryOut(505.16, 496.36, 0.62, 8.18, 1024)),
+        points.head.memory.isEmpty,
+        Triage.summary(s, w, now).memory == Some(MemoryReadingOut(now, "web.2", MemoryOut(480, 500, 3, 0, 1024))),
+        Triage.summary(base, w, now).memory.isEmpty,
+      )
+    },
+    test("releases say since when they were kept (#22)") {
+      assertTrue(Triage.releases(base, w).releases.isEmpty, Triage.releases(base, w).historySince == base.since)
     },
     test("an unknown app lists the watched ones") {
       assertTrue(Triage.find(base, "nope") == Left("unknown app 'nope'; watched apps: webjars"))

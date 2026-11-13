@@ -74,6 +74,17 @@ object PureSpec extends ZIOSpecDefault:
           sig("State changed from starting to up").isEmpty,
         )
       },
+      test("log-runtime-metrics memory samples (#22)") {
+        val line = "source=web.1 dyno=heroku.37083318.5d46498b-801f-4501-9719-8fed7a769ea1 sample#memory_total=505.16MB sample#memory_rss=496.36MB " +
+          "sample#memory_cache=0.62MB sample#memory_swap=8.18MB sample#memory_pgpgin=328pages sample#memory_pgpgout=0pages sample#memory_quota=1024.00MB"
+        assertTrue(
+          Classifier.classify(LogMessage("heroku", "web.1", line)) == List(Event.Measured("web.1", MemorySample(505.16, 496.36, 0.62, 8.18, 1024))),
+          Classifier.classify(LogMessage("heroku", "web.1", line.replace(" sample#memory_quota=1024.00MB", ""))).isEmpty,
+          Classifier.classify(LogMessage("app", "web.1", line)).isEmpty,
+          Classifier.classify(LogMessage("heroku", "web.1 x", line)).isEmpty,
+          Classifier.classify(LogMessage("heroku", "web.1", "source=web.1 sample#load_avg_1m=0.01")).isEmpty,
+        )
+      },
       test("app errors, JSON or text") {
         def n(t: String) = Classifier.classify(LogMessage("app", "web.1", t)).size
         assertTrue(n("""{"level":"ERROR","message":"boom"}""") == 1, n("2026 ERROR something") == 1, n("""{"level":"INFO"}""") == 0)
@@ -137,7 +148,7 @@ object PureSpec extends ZIOSpecDefault:
     suite("OpsState")(
       test("a release's repeated webhooks are one entry per version, the latest (#15)") {
         val t = Instant.parse("2026-11-12T20:35:15Z")
-        val s = OpsState.empty
+        val s = OpsState.empty(Instant.EPOCH)
           .released(app, Release(244, "Update DATABASE", t))
           .released(app, Release(244, "Update DATABASE", t.plusMillis(294)))
           .released(app, Release(245, "Update DATABASE", t.plusSeconds(228)))
@@ -147,10 +158,10 @@ object PureSpec extends ZIOSpecDefault:
       test("conditions within 30 minutes of a delivered incident are added to it; an undelivered one doesn't hold the window (#15)") {
         val t0 = Instant.parse("2026-11-12T21:07:22Z")
         val fired = IncidentRecord(t0, app, List(Reason(Signal.Crash, 1)), List("State changed from up to crashed"), Delivery.Fired("s1"))
-        val s = OpsState.empty.incident(fired)
+        val s = OpsState.empty(Instant.EPOCH).incident(fired)
         val memory = Alert(app, t0.plusSeconds(60), List(Reason(Signal.Memory, 4)), List("Error R14 (Memory quota exceeded)"))
         val folded = s.fold(s.openIncident(app, memory.at).get, memory)
-        val undelivered = OpsState.empty.incident(fired.copy(delivery = Delivery.Undelivered("no token")))
+        val undelivered = OpsState.empty(Instant.EPOCH).incident(fired.copy(delivery = Delivery.Undelivered("no token")))
         assertTrue(
           s.openIncident(app, t0.plusSeconds(60)).map(_.id) == Some(s"webjars-${t0.getEpochSecond / 60}"),
           s.openIncident(app, t0.plusSeconds(31 * 60)).isEmpty,
@@ -272,8 +283,20 @@ object PureSpec extends ZIOSpecDefault:
       test("says it is data, names the app and quotes samples") {
         val at = Instant.parse("2026-11-03T05:41:00Z")
         val w = Watched(app, "webjars/webjars", "https://www.webjars.org", "/", None)
-        val text = IncidentText.build(Alert(app, at, List(Reason(Signal.Timeout, 7)), List("at=error code=H12")), w, Some(Release(12, "Deploy abc", at)))
+        val text = IncidentText.build(Alert(app, at, List(Reason(Signal.Timeout, 7)), List("at=error code=H12")), w, Some(Release(12, "Deploy abc", at)), at, None)
         assertTrue(text.contains("not instructions"), text.contains("app: webjars"), text.contains("timeout x7"), text.contains("v12"), text.contains("> at=error code=H12"))
+      },
+      test("a memory alert has the latest memory sample; no release says since when (#22)") {
+        val at = Instant.parse("2026-11-13T16:20:00Z")
+        val w = Watched(app, "webjars/webjars", "https://www.webjars.org", "/", None)
+        val reading = Some(MemoryReading(at.minusSeconds(5), "web.1", MemorySample(1385.2, 990.4, 3.1, 402, 1024)))
+        val memory = IncidentText.build(Alert(app, at, List(Reason(Signal.Memory, 10)), Nil), w, None, at.minusSeconds(3600), reading)
+        val timeout = IncidentText.build(Alert(app, at, List(Reason(Signal.Timeout, 7)), Nil), w, None, at.minusSeconds(3600), reading)
+        assertTrue(
+          memory.contains("latest memory sample: web.1 at 2026-11-13T16:19:55Z: total 1385 MB of a 1024 MB quota (135%), rss 990 MB, cache 3 MB, swap 402 MB"),
+          memory.contains("last release: none seen since heroku-ops started at 2026-11-13T15:20:00Z"),
+          !timeout.contains("memory sample"),
+        )
       },
     ),
   )

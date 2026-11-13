@@ -132,7 +132,7 @@ final case class Ops(state: Ref[OpsState], client: Client, settings: Settings, o
             case None                   => deliver(alert, w, s, at)
 
   private def deliver(alert: Alert, w: Watched, s: OpsState, at: Instant): UIO[Unit] =
-    val text = IncidentText.build(alert, w, s.releases.get(alert.app).flatMap(_.headOption))
+    val text = IncidentText.build(alert, w, s.releases.get(alert.app).flatMap(_.headOption), s.since, s.app(alert.app).lastMemory)
     System.env(tokenVar(alert.app)).orDie.flatMap: token =>
       (w.routine, token) match
         case (Some(id), Some(t)) =>
@@ -153,7 +153,8 @@ final case class Ops(state: Ref[OpsState], client: Client, settings: Settings, o
 object Ops:
   val live: ZLayer[Client & Settings, Nothing, Ops] = ZLayer.fromZIO:
     for
-      state <- Ref.make(OpsState.empty)
+      started <- Clock.instant
+      state <- Ref.make(OpsState.empty(started))
       client <- ZIO.service[Client]
       settings <- ZIO.service[Settings]
       ownUrl <- Ref.make(Option.empty[String])
