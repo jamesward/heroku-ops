@@ -121,10 +121,15 @@ object PureSpec extends ZIOSpecDefault:
         val failed = parse("""{"resource":"release","action":"update","id":"x","data":{"version":7,"status":"failed","description":"Deploy abc","other":1}}""")
         val ok = parse("""{"resource":"release","action":"update","data":{"version":8,"status":"succeeded","description":"Deploy def"}}""")
         val crash = parse("""{"resource":"dyno","action":"update","data":{"state":"crashed","type":"web"}}""")
+        // #16: a one-off `heroku run` dyno whose command exited 1, and a release phase, aren't the app crashing.
+        val oneOff = parse("""{"resource":"dyno","action":"destroy","data":{"name":"run.9817","type":"run","state":"crashed","exit_status":1}}""")
+        val releasePhase = parse("""{"resource":"dyno","action":"destroy","data":{"name":"release.1234","type":"release","state":"crashed"}}""")
         assertTrue(
           failed.collect { case HookResult.Observed(s, _) => s } == List(Signal.ReleaseFailed),
           ok.collect { case HookResult.Released(r) => r.version } == List(8),
           crash == List(HookResult.DynoCrashed),
+          oneOff.isEmpty,
+          releasePhase.isEmpty,
           Webhook.parse("not json".getBytes(UTF_8), at).isLeft,
         )
       },
