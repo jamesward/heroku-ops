@@ -10,7 +10,7 @@ import java.time.Instant
 final case class HookHead(resource: String, action: String) derives Schema
 final case class ReleaseData(version: Int, status: String, description: Option[String]) derives Schema
 final case class ReleaseHook(data: ReleaseData) derives Schema
-final case class StateData(status: Option[String], state: Option[String]) derives Schema
+final case class StateData(status: Option[String], state: Option[String], `type`: Option[String] = None) derives Schema
 final case class StateHook(data: StateData) derives Schema
 
 enum HookResult derives CanEqual:
@@ -21,6 +21,8 @@ enum HookResult derives CanEqual:
   case DynoCrashed
 
 object Webhook:
+  private val OneOff = Set("run", "release")
+
   private def decode[A: Schema](body: Array[Byte]): Either[String, A] =
     schemaBasedBinaryCodec[A].decode(Chunk.fromArray(body)).left.map(_.toString)
 
@@ -39,5 +41,7 @@ object Webhook:
             if d.status.contains("failed") then List(HookResult.Observed(Signal.BuildFailed, "build failed")) else Nil
         case "dyno" =>
           decode[StateHook](body).map(_.data).map: d =>
-            if d.state.contains("crashed") then List(HookResult.DynoCrashed) else Nil
+            // Only a dyno that serves the app: a one-off `heroku run` dyno (type `run`) or the release phase (`release`, whose
+            // failure is the release webhook's) "crashes" whenever its command exits non-zero (jw-heroku-ops, #16: run.9817 exited 1).
+            if d.state.contains("crashed") && !d.`type`.exists(OneOff) then List(HookResult.DynoCrashed) else Nil
         case _ => Right(Nil)

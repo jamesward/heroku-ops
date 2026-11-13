@@ -4,7 +4,7 @@ package herokuops
 object AlertRules:
   val text: String =
     s"""Conditions are counted over the last ${Detector.WindowMinutes} minutes.
-       |- crash: "State changed ... to crashed", H10, R15, or a dyno webhook "crashed" with no release within ${Detector.ReleaseRestart.toSeconds} s (1); lines within ${Detector.CrashLines.toSeconds} s of each other are one crash
+       |- crash: "State changed ... to crashed", H10, R15, or a dyno webhook "crashed" with no release within ${Detector.ReleaseRestart.toSeconds} s (1; not one-off `heroku run` or release-phase dynos); lines within ${Detector.CrashLines.toSeconds} s of each other are one crash
        |- releasefailed, buildfailed: from the app webhook (1)
        |- memory: R14 memory quota exceeded (${Detector.threshold(Signal.Memory)})
        |- timeout: H12 request timeout (${Detector.threshold(Signal.Timeout)})

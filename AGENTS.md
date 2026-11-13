@@ -21,7 +21,7 @@ Tuned on real traffic (2026-11-03): `heroku logs -n 1500` dumps of webjars, webj
 
 | Condition (window: 5 minutes) | Alerts at |
 |---|---|
-| Crash: `State changed from … to crashed`, H10, R15, or a dyno webhook `crashed` with no release within 30 s | 1 |
+| Crash: `State changed from … to crashed`, H10, R15, or a dyno webhook `crashed` with no release within 30 s (not a one-off `heroku run` or release-phase dyno) | 1 |
 | Release or build failed (webhook) | 1 |
 | R14 memory quota exceeded | 3 (about a minute over quota) |
 | H12 request timeout | 5 |
@@ -37,6 +37,7 @@ One event, one incident:
 - A release's dyno cycle (a deploy, an add-on config change) makes the dyno webhook report `crashed` 1–2 s before or after the release webhook. So a webhook `dyno crashed` is held 30 s and dropped if a release lands within 30 s of it (`Detector.dynoCrashed`, `released`, `settle`). heroku-ops itself has no log drain, so for it this webhook is still the crash signal.
 - While an app's routine was fired less than 30 minutes ago, a new alert is added to that incident (`added` in the `incidents` tool) instead of firing another run (`OpsState.FoldWindow`). An undelivered incident doesn't hold the window. One javadocs outage had fired three runs (crash, memory, apperror) that all worked on the same issue.
 - Heroku sends a release's webhook more than once; `releases` keeps one entry per version, the latest.
+- A one-off dyno (`heroku run`, type `run`) or the release phase (type `release`) reports `crashed` whenever its command exits non-zero. That isn't the app crashing (#16: a `heroku run bash -c …` probe on jw-heroku-ops exited 1), so the dyno webhook counts only other dyno types.
 
 What the data showed:
 - 5xx: none in hours of traffic on four apps, so a few is news. 4xx is 35% of webjars traffic (scanners): never alert on it.
