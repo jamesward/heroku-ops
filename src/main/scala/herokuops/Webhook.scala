@@ -16,6 +16,9 @@ final case class StateHook(data: StateData) derives Schema
 enum HookResult derives CanEqual:
   case Observed(signal: Signal, sample: String)
   case Released(release: Release)
+  /** A dyno reported `crashed`. A release's dyno cycle (a deploy, an add-on config change) reports this too, so it isn't a crash until
+    * [[Detector.dynoCrashed]] has checked for a release around it. */
+  case DynoCrashed
 
 object Webhook:
   private def decode[A: Schema](body: Array[Byte]): Either[String, A] =
@@ -36,5 +39,5 @@ object Webhook:
             if d.status.contains("failed") then List(HookResult.Observed(Signal.BuildFailed, "build failed")) else Nil
         case "dyno" =>
           decode[StateHook](body).map(_.data).map: d =>
-            if d.state.contains("crashed") then List(HookResult.Observed(Signal.Crash, "dyno crashed")) else Nil
+            if d.state.contains("crashed") then List(HookResult.DynoCrashed) else Nil
         case _ => Right(Nil)

@@ -50,9 +50,10 @@ final case class Ops(state: Ref[OpsState], client: Client, settings: Settings, o
             case Right(results) =>
               val events = results.collect { case HookResult.Observed(sig, sample) => Event.Observed(sig, sample) }
               val release = results.collectFirst { case HookResult.Released(r) => r }
+              val dynoCrashed = results.contains(HookResult.DynoCrashed)
               state.update: s =>
-                release.fold(s.record(app, events, at))(s.record(app, events, at).released(app, _))
-                  .bump(t => t.copy(hooks = t.hooks + 1))
+                val recorded = release.fold(s.record(app, events, at))(s.record(app, events, at).released(app, _))
+                (if dynoCrashed then recorded.dynoCrashed(app, at) else recorded).bump(t => t.copy(hooks = t.hooks + 1))
               .as(Outcome.Accepted)
 
   /** Requests the app's probe path once. A 5xx, a timeout or a connection error counts as down. */
@@ -108,7 +109,8 @@ final case class Ops(state: Ref[OpsState], client: Client, settings: Settings, o
   /** Evaluates every app and fires the routine for each alert. */
   def evaluateAll: UIO[Unit] =
     Clock.instant.flatMap: at =>
-      state.modify: s =>
+      state.modify: s0 =>
+        val s = s0.settle(at)
         val results = s.apps.map((name, st) => (name, Detector.evaluate(name, st, at)))
         val alerts = results.values.flatMap(_._2).toList
         (alerts, s.copy(apps = results.map((n, r) => n -> r._1)))
@@ -121,20 +123,27 @@ final case class Ops(state: Ref[OpsState], client: Client, settings: Settings, o
     state.get.flatMap: s =>
       s.watched.get(alert.app) match
         case None => ZIO.unit
-        case Some(_) if !s.mayFire(at) => unreached(alert, "global fire limit reached")
         case Some(w) =>
-          val text = IncidentText.build(alert, w, s.releases.get(alert.app).flatMap(_.headOption))
-          System.env(tokenVar(alert.app)).orDie.flatMap: token =>
-            (w.routine, token) match
-              case (Some(id), Some(t)) =>
-                Fire.send(id, t, text).provide(ZLayer.succeed(client)).foldZIO(
-                  why => state.update(_.bump(x => x.copy(fireFailures = x.fireFailures + 1))) *> unreached(alert, s"fire failed: $why"),
-                  session => ZIO.logInfo(s"fired routine app=${alert.app.value} session=$session") *>
-                    state.update(x => x.bump(y => y.copy(fires = y.fires + 1)).copy(fireTimes = at :: x.fireTimes.take(50))) *>
-                    record(alert, Delivery.Fired(session)),
-                )
-              case (None, _) => unreached(alert, s"no routine id for ${w.repo} in FACTORY.md")
-              case (_, None) => unreached(alert, s"no ${tokenVar(alert.app)} config var")
+          s.openIncident(alert.app, at) match
+            case Some(open) =>
+              ZIO.logInfo(s"added to open incident ${open.id}: ${alert.reasons.map(r => s"${r.signal} x${r.count}").mkString(", ")}") *>
+                state.update(_.fold(open, alert))
+            case None if !s.mayFire(at) => unreached(alert, "global fire limit reached")
+            case None                   => deliver(alert, w, s, at)
+
+  private def deliver(alert: Alert, w: Watched, s: OpsState, at: Instant): UIO[Unit] =
+    val text = IncidentText.build(alert, w, s.releases.get(alert.app).flatMap(_.headOption))
+    System.env(tokenVar(alert.app)).orDie.flatMap: token =>
+      (w.routine, token) match
+        case (Some(id), Some(t)) =>
+          Fire.send(id, t, text).provide(ZLayer.succeed(client)).foldZIO(
+            why => state.update(_.bump(x => x.copy(fireFailures = x.fireFailures + 1))) *> unreached(alert, s"fire failed: $why"),
+            session => ZIO.logInfo(s"fired routine app=${alert.app.value} session=$session") *>
+              state.update(x => x.bump(y => y.copy(fires = y.fires + 1)).copy(fireTimes = at :: x.fireTimes.take(50))) *>
+              record(alert, Delivery.Fired(session)),
+          )
+        case (None, _) => unreached(alert, s"no routine id for ${w.repo} in FACTORY.md")
+        case (_, None) => unreached(alert, s"no ${tokenVar(alert.app)} config var")
 
   /** An incident the routine couldn't be told about is logged and recorded; `Alarm` makes the rest of the fallback. */
   private def unreached(alert: Alert, why: String): UIO[Unit] =

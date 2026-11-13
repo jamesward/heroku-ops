@@ -12,9 +12,14 @@ final case class AppState(
     down: Boolean,
     active: Set[Signal],
     lastFire: Map[Signal, Instant],
+    /** When the last crash line was counted, so the lines of one crash count once (see [[Detector.CrashLines]]). */
+    lastCrash: Option[Instant] = None,
+    /** Webhook `dyno crashed` reports not yet counted, held for [[Detector.ReleaseRestart]] in case a release explains them. */
+    heldDynoCrashes: List[Instant] = Nil,
+    lastRelease: Option[Instant] = None,
 )
 
-final case class Reason(signal: Signal, count: Int)
+final case class Reason(signal: Signal, count: Int) derives CanEqual
 
 final case class Alert(app: AppName, at: Instant, reasons: List[Reason], samples: List[String])
 
@@ -25,6 +30,12 @@ object Detector:
   val Cooldown: Duration = Duration.ofMinutes(30)
   /** A condition that never clears (javadocs has been over its memory quota for hours) alerts again only after this long. */
   val Repeat: Duration = Duration.ofHours(24)
+  /** One crash writes several lines within a second (R15, `State changed from up to crashed`, the webhook's `dyno crashed`): lines this
+    * close together count as one crash, and all of them are kept as samples. */
+  val CrashLines: Duration = Duration.ofSeconds(10)
+  /** A release restarts the dynos, and the dyno webhook reports that as `crashed` 1–2 s before or after the release webhook (javadocs v244
+    * and v247). A webhook-only `dyno crashed` this close to a release isn't a crash. */
+  val ReleaseRestart: Duration = Duration.ofSeconds(30)
   val DownAfterFailures = 3
   val UpAfterSuccesses = 2
 
@@ -51,11 +62,36 @@ object Detector:
     val updated = event match
       case Event.Request => b.copy(requests = b.requests + 1)
       case Event.Observed(sig, sample) =>
+        val sameCrash = sig == Signal.Crash && s.lastCrash.exists(near(_, at, CrashLines))
         b.copy(
-          counts = b.counts.updated(sig, b.counts.getOrElse(sig, 0) + 1),
+          counts = if sameCrash then b.counts else b.counts.updated(sig, b.counts.getOrElse(sig, 0) + 1),
           samples = b.samples.updated(sig, (sample :: b.samples.getOrElse(sig, Nil)).take(3)),
         )
-    s.copy(buckets = (s.buckets.updated(m, updated)).filter((k, _) => k > m - KeepMinutes))
+    val crashed = event match
+      case Event.Observed(Signal.Crash, _) => Some(s.lastCrash.filter(_.isAfter(at)).getOrElse(at))
+      case _                               => s.lastCrash
+    s.copy(buckets = (s.buckets.updated(m, updated)).filter((k, _) => k > m - KeepMinutes), lastCrash = crashed)
+
+  private def near(a: Instant, b: Instant, within: Duration): Boolean =
+    !a.isBefore(b.minus(within)) && !a.isAfter(b.plus(within))
+
+  /** A dyno webhook said `crashed`. Dropped when a release came within [[ReleaseRestart]] before it; otherwise held until [[settle]]. */
+  def dynoCrashed(s: AppState, at: Instant): AppState =
+    if s.lastRelease.exists(near(_, at, ReleaseRestart)) then s
+    else s.copy(heldDynoCrashes = at :: s.heldDynoCrashes)
+
+  /** A release succeeded: held dyno crashes within [[ReleaseRestart]] of it were its restart, not crashes. */
+  def released(s: AppState, at: Instant): AppState =
+    s.copy(lastRelease = Some(at), heldDynoCrashes = s.heldDynoCrashes.filterNot(near(_, at, ReleaseRestart)))
+
+  val DynoCrashedSample = "dyno crashed (webhook)"
+
+  /** Counts the held dyno crashes that no release explained within [[ReleaseRestart]], at the time they were reported. Returns their times,
+    * for the recent events. */
+  def settle(s: AppState, at: Instant): (AppState, List[Instant]) =
+    val (due, held) = s.heldDynoCrashes.partition(t => !t.isAfter(at.minus(ReleaseRestart)))
+    val counted = due.sorted.foldLeft(s.copy(heldDynoCrashes = held))((st, t) => record(st, Event.Observed(Signal.Crash, DynoCrashedSample), t))
+    (counted, due.sorted)
 
   def probe(s: AppState, ok: Boolean): AppState =
     if ok then

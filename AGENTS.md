@@ -21,16 +21,22 @@ Tuned on real traffic (2026-11-03): `heroku logs -n 1500` dumps of webjars, webj
 
 | Condition (window: 5 minutes) | Alerts at |
 |---|---|
-| Crash: `State changed from … to crashed`, H10, R15 | 1 |
+| Crash: `State changed from … to crashed`, H10, R15, or a dyno webhook `crashed` with no release within 30 s | 1 |
 | Release or build failed (webhook) | 1 |
 | R14 memory quota exceeded | 3 (about a minute over quota) |
 | H12 request timeout | 5 |
 | Router faults H11, H13, H14, H17, H19-H23, H99 | 5 |
 | 5xx from the app | 5 and at least 1% of requests |
-| App `ERROR`/`FATAL` log lines | 10 |
+| App `ERROR`/`FATAL` log lines (a JSON line by its `level` field only) | 10 |
 | Probe: 3 failures in a row (1 per minute) | down until 2 successes |
 
 A condition alerts when it starts, at most once per 30 minutes if it keeps flapping, and again after 24 hours if it never clears.
+
+One event, one incident:
+- Crash lines within 10 s of each other are one crash (R15, `State changed … to crashed` and the webhook's `dyno crashed` of one crash came within 0.8 s), with all of them as samples.
+- A release's dyno cycle (a deploy, an add-on config change) makes the dyno webhook report `crashed` 1–2 s before or after the release webhook. So a webhook `dyno crashed` is held 30 s and dropped if a release lands within 30 s of it (`Detector.dynoCrashed`, `released`, `settle`). heroku-ops itself has no log drain, so for it this webhook is still the crash signal.
+- While an app's routine was fired less than 30 minutes ago, a new alert is added to that incident (`added` in the `incidents` tool) instead of firing another run (`OpsState.FoldWindow`). An undelivered incident doesn't hold the window. One javadocs outage had fired three runs (crash, memory, apperror) that all worked on the same issue.
+- Heroku sends a release's webhook more than once; `releases` keeps one entry per version, the latest.
 
 What the data showed:
 - 5xx: none in hours of traffic on four apps, so a few is news. 4xx is 35% of webjars traffic (scanners): never alert on it.

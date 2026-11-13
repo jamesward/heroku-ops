@@ -7,6 +7,8 @@ import java.time.Instant
 import scala.util.chaining.*
 
 object PureSpec extends ZIOSpecDefault:
+  private given CanEqual[Instant, Instant] = CanEqual.derived
+
   private def frame(msg: String): String = s"${msg.getBytes(UTF_8).length} $msg"
   private def body(msgs: String*): Array[Byte] = msgs.map(frame).mkString.getBytes(UTF_8)
   private val router = "<158>1 2026-11-03T05:41:00+00:00 host heroku router - "
@@ -76,6 +78,13 @@ object PureSpec extends ZIOSpecDefault:
         def n(t: String) = Classifier.classify(LogMessage("app", "web.1", t)).size
         assertTrue(n("""{"level":"ERROR","message":"boom"}""") == 1, n("2026 ERROR something") == 1, n("""{"level":"INFO"}""") == 0)
       },
+      test("a JSON line counts by its own level, not by ERROR or FATAL in its message or cause (#14)") {
+        def n(t: String) = Classifier.classify(LogMessage("app", "web.1", t)).size
+        val warnWithFatalCause =
+          """{"timestamp":"2026-11-12T20:36:24.792651504Z","level":"WARN","message":"javadocs - Pool is empty, failed to create/setup connection","cause":"org.postgresql.util.PSQLException: FATAL: role \"u397\" is not permitted to log in"}"""
+        val warnWithErrorTrace = """{"level":"WARN","message":"Index load failed","cause":"java.sql.SQLTransientConnectionException: ERROR at line 3"}"""
+        assertTrue(n(warnWithFatalCause) == 0, n(warnWithErrorTrace) == 0, n("""{"level":"FATAL","message":"x"}""") == 1, n("FATAL: role is not permitted") == 1)
+      },
       test("samples drop query strings and control characters and are capped") {
         val s = Classifier.sample("at=info method=GET path=\"/a?token=secret\" x\u0007y" + "z" * 400)
         assertTrue(!s.contains("secret"), !s.contains('\u0007'), s.length == 300)
@@ -115,12 +124,76 @@ object PureSpec extends ZIOSpecDefault:
         assertTrue(
           failed.collect { case HookResult.Observed(s, _) => s } == List(Signal.ReleaseFailed),
           ok.collect { case HookResult.Released(r) => r.version } == List(8),
-          crash.collect { case HookResult.Observed(s, _) => s } == List(Signal.Crash),
+          crash == List(HookResult.DynoCrashed),
           Webhook.parse("not json".getBytes(UTF_8), at).isLeft,
         )
       },
     ),
+    suite("OpsState")(
+      test("a release's repeated webhooks are one entry per version, the latest (#15)") {
+        val t = Instant.parse("2026-11-12T20:35:15Z")
+        val s = OpsState.empty
+          .released(app, Release(244, "Update DATABASE", t))
+          .released(app, Release(244, "Update DATABASE", t.plusMillis(294)))
+          .released(app, Release(245, "Update DATABASE", t.plusSeconds(228)))
+          .released(app, Release(245, "Update DATABASE", t.plusSeconds(228).plusMillis(94)))
+        assertTrue(s.releases(app).map(_.version) == List(245, 244), s.releases(app).head.at == t.plusSeconds(228).plusMillis(94))
+      },
+      test("conditions within 30 minutes of a delivered incident are added to it; an undelivered one doesn't hold the window (#15)") {
+        val t0 = Instant.parse("2026-11-12T21:07:22Z")
+        val fired = IncidentRecord(t0, app, List(Reason(Signal.Crash, 1)), List("State changed from up to crashed"), Delivery.Fired("s1"))
+        val s = OpsState.empty.incident(fired)
+        val memory = Alert(app, t0.plusSeconds(60), List(Reason(Signal.Memory, 4)), List("Error R14 (Memory quota exceeded)"))
+        val folded = s.fold(s.openIncident(app, memory.at).get, memory)
+        val undelivered = OpsState.empty.incident(fired.copy(delivery = Delivery.Undelivered("no token")))
+        assertTrue(
+          s.openIncident(app, t0.plusSeconds(60)).map(_.id) == Some(s"webjars-${t0.getEpochSecond / 60}"),
+          s.openIncident(app, t0.plusSeconds(31 * 60)).isEmpty,
+          folded.incidents.size == 1,
+          folded.incidents.head.added == List(memory.at -> List(Reason(Signal.Memory, 4))),
+          folded.incidents.head.samples == List("State changed from up to crashed", "Error R14 (Memory quota exceeded)"),
+          undelivered.openIncident(app, t0.plusSeconds(60)).isEmpty,
+        )
+      },
+    ),
     suite("Detector")(
+      test("one crash's lines (R15, State changed, the dyno webhook) count as one crash, with all of them as samples") {
+        val t0 = Instant.parse("2026-11-12T21:45:02.229Z")
+        val s1 = Detector.record(Detector.empty, Event.Observed(Signal.Crash, "Error R15 (Memory quota vastly exceeded)"), t0)
+        val s2 = Detector.record(s1, Event.Observed(Signal.Crash, "State changed from up to crashed"), t0.plusMillis(287))
+        val s3 = Detector.dynoCrashed(s2, t0.plusMillis(731))
+        val (s4, _) = Detector.settle(s3, t0.plusSeconds(40))
+        val (_, alert) = Detector.evaluate(app, s4, t0.plusSeconds(40))
+        assertTrue(alert.map(_.reasons) == Some(List(Reason(Signal.Crash, 1))), alert.exists(_.samples.size == 3))
+      },
+      test("two crashes a minute apart count as two") {
+        val t0 = Instant.parse("2026-11-12T21:07:16Z")
+        val s1 = Detector.record(Detector.empty, Event.Observed(Signal.Crash, "State changed from up to crashed"), t0)
+        val s2 = Detector.record(s1, Event.Observed(Signal.Crash, "State changed from up to crashed"), t0.plusSeconds(60))
+        assertTrue(Detector.conditions(s2, t0.plusSeconds(60)) == List(Reason(Signal.Crash, 2)))
+      },
+      test("a dyno webhook 'crashed' just before a release (javadocs v247) is the release's restart, not a crash (#17)") {
+        val crashAt = Instant.parse("2026-11-13T04:50:41.99Z")
+        val held = Detector.dynoCrashed(Detector.empty, crashAt)
+        val (early, _) = Detector.evaluate(app, held, crashAt.plusSeconds(5)) // an evaluation before the release arrives
+        val released = Detector.released(early, Instant.parse("2026-11-13T04:50:42.87Z"))
+        val (settled, counted) = Detector.settle(released, crashAt.plusSeconds(60))
+        val (_, alert) = Detector.evaluate(app, settled, crashAt.plusSeconds(60))
+        assertTrue(Detector.evaluate(app, held, crashAt.plusSeconds(5))._2.isEmpty, counted.isEmpty, alert.isEmpty)
+      },
+      test("a dyno webhook 'crashed' just after a release is dropped at once") {
+        val releaseAt = Instant.parse("2026-11-12T20:35:13Z")
+        val s = Detector.dynoCrashed(Detector.released(Detector.empty, releaseAt), releaseAt.plusSeconds(2))
+        assertTrue(s.heldDynoCrashes.isEmpty)
+      },
+      test("a dyno webhook 'crashed' with no release around it counts once it's 30 s old (heroku-ops has no drain to itself)") {
+        val t0 = Instant.parse("2026-11-13T04:00:00Z")
+        val held = Detector.dynoCrashed(Detector.empty, t0)
+        val (notYet, none) = Detector.settle(held, t0.plusSeconds(20))
+        val (settled, counted) = Detector.settle(notYet, t0.plusSeconds(31))
+        val (_, alert) = Detector.evaluate(app, settled, t0.plusSeconds(31))
+        assertTrue(none.isEmpty, counted == List(t0), alert.map(_.reasons) == Some(List(Reason(Signal.Crash, 1))))
+      },
       test("a crash alerts once, then stays quiet during the cooldown") {
         val t0 = Instant.parse("2026-11-03T05:41:00Z")
         val s1 = Detector.record(Detector.empty, Event.Observed(Signal.Crash, "State changed from up to crashed"), t0)

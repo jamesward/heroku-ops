@@ -21,7 +21,7 @@ object Alarm:
 
   def undelivered(s: OpsState, now: Instant, within: Duration): List[UndeliveredOut] =
     s.incidents.toList.reverse.collect:
-      case IncidentRecord(at, app, reasons, _, Delivery.Undelivered(why)) if at.isAfter(now.minus(within)) =>
+      case IncidentRecord(at, app, reasons, _, Delivery.Undelivered(why), _) if at.isAfter(now.minus(within)) =>
         UndeliveredOut(app.value, at, reasons.map(r => s"${r.signal.toString.toLowerCase} x${r.count}"), why)
 
   /** This app's own address as an incoming request names it: the Heroku router sends `Host` (only a host the app is mapped to
