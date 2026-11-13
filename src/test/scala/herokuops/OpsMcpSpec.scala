@@ -67,4 +67,15 @@ object OpsMcpSpec extends ZIOSpecDefault:
         unknown._2.contains("isError\":true"), unknown._2.contains("watched apps: webjars"),
       )
     },
+    test("app_status answers for an app with no logs and no probe yet (heroku-ops watching itself: no drain, #16)") {
+      for
+        _ <- ZIO.serviceWithZIO[Ops](_.state.update(s => s.copy(watched = Map(app -> w))))
+        (code, text, _) <- rpc("tools/call", """{"name":"app_status","arguments":{"app":"webjars"}}""")
+      // The output schema says `logsSecondsAgo` is an integer, not required: a client that checks structuredContent
+      // against it (Claude Code) refused `"logsSecondsAgo":null`. Absent fields are fine.
+      yield assertTrue(
+        code == 200, !text.contains("isError\":true"), text.contains("\"status\":\"no-data\""),
+        !text.contains("\"logsSecondsAgo\""), !text.contains("null"),
+      )
+    },
   ).provide(layer, Scope.default)
