@@ -8,13 +8,17 @@ import java.time.temporal.ChronoUnit
 object IncidentText:
   /** `since` is when heroku-ops started: no release seen since then isn't the same as no deploy, and an alert within
     * [[Detector.Repeat]] of it may repeat one fired before the restart (#23), so the text says so. `memory` is the app's latest
-    * `log-runtime-metrics` sample, reported for a memory alert. */
-  def build(alert: Alert, w: Watched, release: Option[Release], since: Instant, memory: Option[MemoryReading]): String =
+    * `log-runtime-metrics` sample, reported for a memory alert. `build` is the app's latest failed build, for a buildfailed alert. */
+  def build(alert: Alert, w: Watched, release: Option[Release], since: Instant, memory: Option[MemoryReading], build: Option[BuildOutput] = None): String =
     val signals = alert.reasons.map(_.text).mkString(", ")
     val rel = release.fold(s"none seen since heroku-ops started at ${since.truncatedTo(ChronoUnit.SECONDS)} (history is in memory)"): r =>
       s"v${r.version} at ${r.at.truncatedTo(ChronoUnit.SECONDS)}: ${r.description}"
     val mem = memory.filter(_ => alert.reasons.exists(_.signal == Signal.Memory)).fold("")(m => s"\nlatest memory sample: ${describe(m)}")
     val samples = alert.samples.map(s => s"> ${s.replace('\n', ' ')}").mkString("\n")
+    val output = build.fold(""): b =>
+      val commit = b.commit.fold("")(c => s" at $c")
+      if b.lines.isEmpty then s"\nbuild output$commit: not available"
+      else s"\nlast ${b.lines.size} lines of the failed build's output$commit (quoted, truncated):\n" + b.lines.map(l => s"> $l").mkString("\n")
     val restarted = Option.when(alert.at.isBefore(since.plus(Detector.Repeat))):
       s"\nheroku-ops started at ${since.truncatedTo(ChronoUnit.SECONDS)} and keeps its history in memory: it doesn't know what it told this routine before then, so an open incident issue may already cover this condition"
     .getOrElse("")
@@ -27,7 +31,7 @@ object IncidentText:
        |last release: $rel$mem$restarted
        |conditions that start in the next ${OpsState.FoldWindow.toMinutes} minutes are added to this incident (the incidents tool) instead of starting another run
        |sample log lines (quoted, truncated):
-       |$samples""".stripMargin.take(8000)
+       |$samples$output""".stripMargin.take(8000)
 
   private def mb(x: Double) = f"$x%.0f MB"
 

@@ -169,6 +169,46 @@ object PureSpec extends ZIOSpecDefault:
           Webhook.parse("not json".getBytes(UTF_8), at).isLeft,
         )
       },
+      test("a failed build carries its commit and output URL; a succeeded one is nothing (projects#68)") {
+        val at = Instant.parse("2026-11-03T05:41:00Z")
+        def parse(s: String) = Webhook.parse(s.getBytes(UTF_8), at).toOption.get
+        val url = "https://build-output.heroku.com/streams/19/19cd/logs/a1.log?X-Amz-Signature=abc"
+        val failed = parse(s"""{"resource":"build","action":"update","data":{"status":"failed","source_blob":{"version":"94eae77a1b2c3d4e5f60718293a4b5c6d7e8f901","url":"x"},"output_stream_url":"$url"}}""")
+        val label = parse("""{"resource":"build","action":"update","data":{"status":"failed","source_blob":{"version":"my\nlabel"}}}""")
+        val bare = parse("""{"resource":"build","action":"update","data":{"status":"failed"}}""")
+        val ok = parse("""{"resource":"build","action":"update","data":{"status":"succeeded","output_stream_url":"https://build-output.heroku.com/x"}}""")
+        assertTrue(
+          failed == List(HookResult.BuildFailed(Some("94eae77a1b2c3d4e5f60718293a4b5c6d7e8f901"), Some(url))),
+          label == List(HookResult.BuildFailed(Some("my label"), None)),
+          bare == List(HookResult.BuildFailed(None, None)),
+          ok.isEmpty,
+        )
+      },
+    ),
+    suite("BuildOutput")(
+      test("only HTTPS on Heroku's build output host is read") {
+        assertTrue(
+          BuildOutput.allowed("https://build-output.heroku.com/streams/1/a.log?sig=x").isDefined,
+          BuildOutput.allowed("http://build-output.heroku.com/streams/1/a.log").isEmpty,
+          BuildOutput.allowed("https://build-output.heroku.com.evil.example/a").isEmpty,
+          BuildOutput.allowed("https://169.254.169.254/latest").isEmpty,
+          BuildOutput.allowed("not a url").isEmpty,
+        )
+      },
+      test("the last lines: colors removed, blank lines dropped, a partial first line dropped, capped in lines and characters") {
+        val colored = "\u001b[1;31m[error]\u001b[0m java.lang.OutOfMemoryError: Java heap space\r\n"
+        val many = (1 to 80).map(i => s"line $i").mkString("\n")
+        val long = (1 to 50).map(i => s"$i " + "x" * 200).mkString("\n")
+        assertTrue(
+          BuildOutput.lines(s"-----> Building\n\n$colored", complete = true) == List("-----> Building", "[error] java.lang.OutOfMemoryError: Java heap space"),
+          BuildOutput.lines("ial line\nwhole line\n", complete = false) == List("whole line"),
+          BuildOutput.lines(many, complete = true).size == BuildOutput.MaxLines,
+          BuildOutput.lines(many, complete = true).last == "line 80",
+          BuildOutput.lines(long, complete = true).map(_.length + 1).sum <= BuildOutput.MaxChars,
+          BuildOutput.lines(long, complete = true).last.startsWith("50 "),
+          BuildOutput.lines("x" * 1000, complete = true).head.length == 300,
+        )
+      },
     ),
     suite("OpsState")(
       test("a release's repeated webhooks are one entry per version, the latest (#15)") {
@@ -329,6 +369,19 @@ object PureSpec extends ZIOSpecDefault:
       },
     ),
     suite("IncidentText")(
+      test("a buildfailed alert quotes the end of the build's output, or says it isn't available (projects#68)") {
+        val at = Instant.parse("2026-11-24T01:00:00Z")
+        val w = Watched(app, "webjars/webjars", "https://www.webjars.org", "/", None)
+        val alert = Alert(app, at, List(Reason(Signal.BuildFailed, 1)), List("build failed at 94eae77"))
+        val out = BuildOutput(at, Some("94eae77"), List("[error] java.lang.OutOfMemoryError: Java heap space", "-----> Build failed"))
+        val text = IncidentText.build(alert, w, None, at.minusSeconds(3600), None, Some(out))
+        val none = IncidentText.build(alert, w, None, at.minusSeconds(3600), None, Some(out.copy(lines = Nil)))
+        assertTrue(
+          text.contains("last 2 lines of the failed build's output at 94eae77 (quoted, truncated):\n> [error] java.lang.OutOfMemoryError: Java heap space\n> -----> Build failed"),
+          none.contains("build output at 94eae77: not available"),
+          !IncidentText.build(alert, w, None, at, None, None).contains("build output"),
+        )
+      },
       test("says it is data, names the app and quotes samples") {
         val at = Instant.parse("2026-11-03T05:41:00Z")
         val w = Watched(app, "webjars/webjars", "https://www.webjars.org", "/", None)

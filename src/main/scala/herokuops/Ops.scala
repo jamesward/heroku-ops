@@ -51,10 +51,23 @@ final case class Ops(state: Ref[OpsState], client: Client, settings: Settings, o
               val events = results.collect { case HookResult.Observed(sig, sample) => Event.Observed(sig, sample) }
               val release = results.collectFirst { case HookResult.Released(r) => r }
               val dynoCrashed = results.contains(HookResult.DynoCrashed)
+              val builds = results.collect { case b: HookResult.BuildFailed => b }
               state.update: s =>
                 val recorded = release.fold(s.record(app, events, at))(s.record(app, events, at).released(app, _))
                 (if dynoCrashed then recorded.dynoCrashed(app, at) else recorded).bump(t => t.copy(hooks = t.hooks + 1))
+              *> ZIO.foreachDiscard(builds)(buildFailed(app, _, at).forkDaemon)
               .as(Outcome.Accepted)
+
+  /** Reads the end of the failed build's output, then records the event with it, so the alert that follows can quote it. The webhook
+    * forks it and answers without waiting for the read (up to 30 s). */
+  def buildFailed(app: AppName, b: HookResult.BuildFailed, at: Instant): UIO[Unit] =
+    val url = b.output.flatMap(BuildOutput.allowed)
+    for
+      _ <- ZIO.logWarning(s"build output URL not on ${BuildOutput.Host}; not read app=${app.value}").when(b.output.isDefined && url.isEmpty)
+      lines <- ZIO.foreach(url)(BuildOutput.fetch(client, _)).map(_.getOrElse(Nil))
+      _ <- ZIO.logInfo(s"build failed app=${app.value} commit=${b.commit.getOrElse("-")} output lines=${lines.size}")
+      _ <- state.update(_.record(app, List(Event.Observed(Signal.BuildFailed, BuildOutput.sample(b.commit))), at).built(app, BuildOutput(at, b.commit, lines)))
+    yield ()
 
   /** Requests the app's probe path once. A 5xx, a timeout or a connection error counts as down. */
   def probe(w: Watched): UIO[ProbeResult] =
@@ -132,7 +145,8 @@ final case class Ops(state: Ref[OpsState], client: Client, settings: Settings, o
             case None                   => deliver(alert, w, s, at)
 
   private def deliver(alert: Alert, w: Watched, s: OpsState, at: Instant): UIO[Unit] =
-    val text = IncidentText.build(alert, w, s.releases.get(alert.app).flatMap(_.headOption), s.since, s.app(alert.app).lastMemory)
+    val build = s.builds.get(alert.app).filter(_ => alert.reasons.exists(_.signal == Signal.BuildFailed))
+    val text = IncidentText.build(alert, w, s.releases.get(alert.app).flatMap(_.headOption), s.since, s.app(alert.app).lastMemory, build)
     System.env(tokenVar(alert.app)).orDie.flatMap: token =>
       (w.routine, token) match
         case (Some(id), Some(t)) =>

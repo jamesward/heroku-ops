@@ -30,6 +30,28 @@ object HerokuOpsSpec extends ZIOSpecDefault:
   private val drainSecret = Secrets.derive(master, Secrets.Kind.Drain, app)
 
   def spec = suite("heroku-ops")(
+    test("reading build output keeps the end of a long stream (projects#68)") {
+      val log = (1 to 20000).map(i => s"line $i").mkString("\n") + "\n"
+      for
+        port <- Server.install(Routes(Method.GET / "log" -> Handler.fromResponse(Response.text(log))))
+        client <- ZIO.service[Client]
+        url <- ZIO.fromEither(URL.decode(s"http://localhost:$port/log"))
+        lines <- BuildOutput.fetch(client, url)
+      yield assertTrue(lines.size == BuildOutput.MaxLines, lines.head == "line 19951", lines.last == "line 20000")
+    }.provide(Client.default, Server.defaultWith(_.port(0))),
+    test("a failed build is recorded with its commit; an output URL off Heroku's build output host isn't read (projects#68)") {
+      for
+        _ <- setup
+        at <- Clock.instant
+        ops <- ZIO.service[Ops]
+        _ <- ops.buildFailed(app, HookResult.BuildFailed(Some("94eae77"), Some("https://example.com/steal")), at)
+        s <- ops.state.get
+      yield assertTrue(
+        s.recent(app).map(_.sample) == Vector("build failed at 94eae77"),
+        s.builds.get(app).map(b => (b.commit, b.lines)) == Some((Some("94eae77"), Nil)),
+        s.app(app).buckets.values.map(_.counts.getOrElse(Signal.BuildFailed, 0)).sum == 1,
+      )
+    },
     test("GET /health reports ok and the watched app count") {
       for
         _ <- setup
