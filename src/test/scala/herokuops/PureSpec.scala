@@ -293,7 +293,7 @@ object PureSpec extends ZIOSpecDefault:
         val memory = IncidentText.build(Alert(app, at, List(Reason(Signal.Memory, 10)), Nil), w, None, at.minusSeconds(3600), reading)
         val timeout = IncidentText.build(Alert(app, at, List(Reason(Signal.Timeout, 7)), Nil), w, None, at.minusSeconds(3600), reading)
         assertTrue(
-          memory.contains("latest memory sample: web.1 at 2026-11-13T16:19:55Z: total 1385 MB of a 1024 MB quota (135%), rss 990 MB, cache 3 MB, swap 402 MB"),
+          memory.contains("latest memory sample: web.1 at 2026-11-13T16:19:55Z: rss+swap 1392 MB of a 1024 MB quota (136%), rss 990 MB, swap 402 MB, cache 3 MB, total incl. reclaimable cache 1385 MB"),
           memory.contains("last release: none seen since heroku-ops started at 2026-11-13T15:20:00Z"),
           !timeout.contains("memory sample"),
         )
