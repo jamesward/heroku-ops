@@ -24,4 +24,4 @@ object Replay:
         (next, found ++ alert)
     println(s"${app.value}: ${parsed.size} lines, $requests requests, signals $signals")
     if alerts.isEmpty then println("  no alerts")
-    alerts.foreach(a => println(s"  ALERT ${a.at} ${a.reasons.map(r => s"${r.signal} x${r.count}").mkString(", ")}"))
+    alerts.foreach(a => println(s"  ALERT ${a.at} ${a.reasons.map(_.text).mkString(", ")}"))

@@ -9,7 +9,7 @@ object AlertRules:
        |- memory: R14 memory quota exceeded (${Detector.threshold(Signal.Memory)})
        |- timeout: H12 request timeout (${Detector.threshold(Signal.Timeout)})
        |- routererror: H11, H13, H14, H17, H19-H23, H99 (${Detector.threshold(Signal.RouterError)})
-       |- servererror: 5xx from the app, at least ${Detector.ServerErrorMinimum} and ${(Detector.ServerErrorRatio * 100).toInt}% of requests
+       |- servererror: 5xx from the app, at least ${Detector.ServerErrorMinimum} and ${(Detector.ServerErrorRatio * 100).toInt}% of requests; when ${(Detector.SheddingShare * 100).toInt}% of them are 503s answered within ${Classifier.FastMillis} ms while the busiest minute has ${Detector.BurstFactor.toInt}× the earlier requests per minute, it is the app shedding a burst, and it alerts only once it lasts all ${Detector.WindowMinutes} minutes
        |- apperror: ERROR or FATAL log lines; a JSON line counts by its "level" field only (${Detector.threshold(Signal.AppError)})
        |- probedown: ${Detector.DownAfterFailures} probe failures in a row (one probe a minute); up again after ${Detector.UpAfterSuccesses} successes
        |Not problems: 4xx, slow requests, H15 idle connections, H18/H27 client disconnects, "Process exited with status N" (only "to crashed" counts).
