@@ -63,14 +63,14 @@ object Detector:
     val updated = event match
       case Event.Request => b.copy(requests = b.requests + 1)
       case Event.Measured(_, memory) => b.copy(memory = Some(b.memory.fold(MemoryPeak.of(memory))(_.max(memory))))
-      case Event.Observed(sig, sample) =>
+      case Event.Observed(sig, sample, _) =>
         val sameCrash = sig == Signal.Crash && s.lastCrash.exists(near(_, at, CrashLines))
         b.copy(
           counts = if sameCrash then b.counts else b.counts.updated(sig, b.counts.getOrElse(sig, 0) + 1),
           samples = b.samples.updated(sig, (sample :: b.samples.getOrElse(sig, Nil)).take(3)),
         )
     val crashed = event match
-      case Event.Observed(Signal.Crash, _) => Some(s.lastCrash.filter(_.isAfter(at)).getOrElse(at))
+      case Event.Observed(Signal.Crash, _, _) => Some(s.lastCrash.filter(_.isAfter(at)).getOrElse(at))
       case _                               => s.lastCrash
     val measured = event match
       case Event.Measured(dyno, memory) if s.lastMemory.forall(!_.at.isAfter(at)) => Some(MemoryReading(at, dyno, memory))

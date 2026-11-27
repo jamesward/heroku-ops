@@ -64,6 +64,39 @@ object TriageSpec extends ZIOSpecDefault:
     test("an unknown app lists the watched ones") {
       assertTrue(Triage.find(base, "nope") == Left("unknown app 'nope'; watched apps: webjars"))
     },
+    test("a timeout's event can carry the app's own lines: its request's, then its dyno's within 30 s (#24)") {
+      val t0 = now.minusSeconds(120)
+      def batch(s: OpsState, at: Instant, msgs: LogMessage*) =
+        s.record(app, msgs.toList.flatMap(Classifier.classify), at).logged(app, msgs.toList.flatMap(Classifier.appLine(_, at)), at)
+      def line(dyno: String, text: String) = LogMessage("app", dyno, text)
+      val h12 = LogMessage("heroku", "router", """at=error code=H12 desc="Request timeout" method=GET path="/a.jar?x=1" host=h request_id=rid-1 fwd="1.2.3.4" dyno=web.1 connect=0ms service=30000ms status=503""")
+      val s = Seq(
+        t0.minusSeconds(40) -> line("web.1", "too early"),
+        t0 -> line("web.1", """{"level":"INFO","message":"Downloading jar","request_id":"rid-1"}"""),
+        t0.plusSeconds(10) -> line("web.1", "other request on web.1"),
+        t0.plusSeconds(10) -> line("web.2", "another dyno"),
+        t0.plusSeconds(30) -> h12,
+        t0.plusSeconds(35) -> line("web.1", """{"level":"INFO","message":"Downloaded jar","durationMs":41000,"request_id":"rid-1"}"""),
+        t0.plusSeconds(70) -> line("web.1", "too late"),
+      ).foldLeft(base)((st, e) => batch(st, e._1, e._2))
+      val timeout = Triage.events(s, w, Some("timeout"), 10, appLines = true).events
+      val lines = timeout.flatMap(_.appLines.toList.flatten)
+      assertTrue(
+        timeout.size == 1,
+        lines.map(l => (l.line.take(30), l.sameRequest)) == List(
+          ("""{"level":"INFO","message":"Dow""", true), ("other request on web.1", false), ("""{"level":"INFO","message":"Dow""", true)),
+        lines.map(_.at) == List(t0, t0.plusSeconds(10), t0.plusSeconds(35)),
+        lines.forall(_.dyno == "web.1"),
+        Triage.events(s, w, Some("timeout"), 10).events.head.appLines.isEmpty,
+      )
+    },
+    test("app lines are bounded per app (#24)") {
+      val h12 = Event.Observed(Signal.Timeout, "h12", Some(RequestRef(Some("web.1"), None)))
+      val lines = (1 to 1000).foldLeft(base): (st, i) =>
+        val at = now.plusSeconds(i)
+        st.record(app, List(h12), at).logged(app, List(AppLine(at, "web.1", None, s"l$i")), at)
+      assertTrue(lines.appLines(app).kept.size == AppLines.KeptLines, lines.appLines(app).recent.size <= 31, lines.appLines(app).kept.last.line == "l1000")
+    },
     test("recent events are bounded per app") {
       val s = (1 to 300).foldLeft(base)((st, i) => st.record(app, List(Event.Observed(Signal.AppError, s"e$i")), now))
       assertTrue(s.recent(app).size == OpsState.RecentPerApp, s.recent(app).last.sample == "e300")

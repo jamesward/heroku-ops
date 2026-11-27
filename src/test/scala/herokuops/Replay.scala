@@ -15,7 +15,7 @@ object Replay:
     val parsed = Files.readAllLines(Path.of(args(0))).asScala.toList.flatMap:
       case Line(ts, source, proc, text) => scala.util.Try(Instant.parse(ts.take(19) + "Z")).toOption.map((_, LogMessage(source, proc, text)))
       case _                            => None
-    val signals = parsed.flatMap((_, m) => Classifier.classify(m)).collect { case Event.Observed(s, _) => s }.groupBy(identity).view.mapValues(_.size).toMap
+    val signals = parsed.flatMap((_, m) => Classifier.classify(m)).collect { case Event.Observed(s, _, _) => s }.groupBy(identity).view.mapValues(_.size).toMap
     val requests = parsed.flatMap((_, m) => Classifier.classify(m)).count(_ == Event.Request)
     val (_, alerts) = parsed.foldLeft((Detector.empty, List.empty[Alert])):
       case ((state, found), (at, msg)) =>

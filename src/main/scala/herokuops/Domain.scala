@@ -48,7 +48,8 @@ final case class MemoryReading(at: Instant, dyno: String, sample: MemorySample)
 
 enum Event derives CanEqual:
   case Request
-  case Observed(signal: Signal, sample: String)
+  /** `request` is the router line's dyno and request id, for a timeout or 5xx (#24). */
+  case Observed(signal: Signal, sample: String, request: Option[RequestRef] = None)
   case Measured(dyno: String, memory: MemorySample)
 
 final case class Watched(app: AppName, repo: String, url: String, probe: String, routine: Option[RoutineId])

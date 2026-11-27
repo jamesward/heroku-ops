@@ -1,5 +1,7 @@
 package herokuops
 
+import java.time.Instant
+
 /** Heuristics that turn a log line into events. Detection is patterns and counts, not AI. */
 object Classifier:
   private val Pair = raw"""(\w+)=("([^"]*)"|\S*)""".r
@@ -12,6 +14,8 @@ object Classifier:
   private val Control = raw"[\p{Cntrl}&&[^\t]]".r
   private val MemoryField = raw"sample#memory_(total|rss|cache|swap|quota)=(\d+(?:\.\d+)?)MB".r
   private val Dyno = raw"[a-z][a-z0-9_]*\.\d{1,4}".r
+  private val RequestId = raw"[A-Za-z0-9-]{1,64}".r
+  private val AppRequestId = raw"""(?:"request_id"\s*:\s*"|\brequest_id=)([A-Za-z0-9-]{1,64})""".r.unanchored
 
   /** Router errors that mean the app can't serve. The rest (H15 idle connection on a websocket, H18 and H27 a client that
     * left, H25, H31) are routine for apps with websockets or crawlers: json-paste logs hundreds of H15 a month. */
@@ -23,6 +27,13 @@ object Classifier:
   /** Lines are quoted into a report, so cap them, drop control characters and drop query strings. */
   def sample(text: String): String =
     Control.replaceAllIn(Fwd.replaceAllIn(Path.replaceAllIn(text, m => s"""path="${m.group(1)}""""), "fwd=-"), " ").take(300)
+
+  def isDyno(proc: String): Boolean = Dyno.matches(proc)
+
+  /** The app's own line from a dyno (`web.1`), kept to put next to a timeout or 5xx (#24). */
+  def appLine(m: LogMessage, at: Instant): Option[AppLine] =
+    Option.when(m.source == "app" && isDyno(m.proc)):
+      AppLine(at, m.proc, AppRequestId.findFirstMatchIn(m.text).map(_.group(1)), sample(m.text))
 
   def classify(m: LogMessage): List[Event] =
     if m.source == "heroku" && m.proc == "router" then router(m.text)
@@ -42,7 +53,10 @@ object Classifier:
       case _                     => None
     val serverError = status.filter(_ >= 500).map(_ => Signal.ServerError)
     val seen = Option.when(f.contains("method"))(Event.Request).toList
-    seen ++ failure.orElse(serverError).map(observed(_, text)).toList
+    val request = RequestRef(f.get("dyno").filter(isDyno), f.get("request_id").filter(RequestId.matches))
+    seen ++ failure.orElse(serverError).map: sig =>
+      Event.Observed(sig, sample(text), Option.when(sig == Signal.Timeout || sig == Signal.ServerError)(request))
+    .toList
 
   /** `Process exited with status N` isn't a crash by itself: json-paste exited with 1 on every SIGTERM stop (idling, deploys). Heroku
     * writes `State changed from up to crashed` when a process dies unexpectedly. */
@@ -58,7 +72,7 @@ object Classifier:
   private def memory(proc: String, text: String): Option[Event] =
     val f = MemoryField.findAllMatchIn(text).map(m => m.group(1) -> m.group(2).toDouble).toMap
     for
-      dyno <- Option.when(Dyno.matches(proc))(proc)
+      dyno <- Option.when(isDyno(proc))(proc)
       total <- f.get("total")
       rss <- f.get("rss")
       cache <- f.get("cache")

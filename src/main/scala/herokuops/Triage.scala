@@ -26,7 +26,10 @@ final case class MinutePoint(minute: Instant, requests: Int, signals: Map[String
 final case class AppDetail(summary: AppSummary, lastMinutes: List[MinutePoint]) derives Schema
 final case class Apps(apps: List[AppSummary]) derives Schema
 final case class Series(app: String, points: List[MinutePoint]) derives Schema
-final case class EventOut(at: Instant, signal: String, sample: String) derives Schema
+/** One of the app's own lines near a timeout or 5xx; `sameRequest` when it carries the router line's request id (#24). */
+final case class AppLineOut(at: Instant, dyno: String, sameRequest: Boolean, line: String) derives Schema, CanEqual
+/** `appLines` only when asked for, and only for a timeout or 5xx. */
+final case class EventOut(at: Instant, signal: String, sample: String, appLines: Option[List[AppLineOut]] = None) derives Schema
 final case class Events(app: String, events: List[EventOut]) derives Schema
 final case class AddedOut(at: Instant, conditions: List[String]) derives Schema
 final case class IncidentOut(
@@ -85,10 +88,16 @@ object Triage:
 
   def detail(s: OpsState, w: Watched, now: Instant): AppDetail = AppDetail(summary(s, w, now), series(s, w, now, 15))
 
-  def events(s: OpsState, w: Watched, signal: Option[String], limit: Int): Events =
+  val AppLinesPerEvent = 20
+
+  /** With `appLines`, a timeout or 5xx also has the app's own lines of the same request, or else of its dyno within [[AppLines.Around]]. */
+  def events(s: OpsState, w: Watched, signal: Option[String], limit: Int, appLines: Boolean = false): Events =
     val all = s.recent.getOrElse(w.app, Vector.empty).reverse
     val picked = signal.fold(all)(sig => all.filter(_.signal.toString.equalsIgnoreCase(sig)))
-    Events(w.app.value, picked.take(limit).toList.map(n => EventOut(n.at, n.signal.toString.toLowerCase, n.sample)))
+    val lines = s.appLines.getOrElse(w.app, AppLines.empty)
+    def context(n: Notable) = Option.when(appLines)(n.anchor).flatten.map: a =>
+      lines.around(a, AppLinesPerEvent).map(l => AppLineOut(l.at, l.dyno, AppLines.sameRequest(a, l), l.line))
+    Events(w.app.value, picked.take(limit).toList.map(n => EventOut(n.at, n.signal.toString.toLowerCase, n.sample, context(n))))
 
   def incidents(s: OpsState, app: Option[String], limit: Int): Incidents =
     val all = s.incidents.reverse.filter(i => app.forall(_.equalsIgnoreCase(i.app.value)))
