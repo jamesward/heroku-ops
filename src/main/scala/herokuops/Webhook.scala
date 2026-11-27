@@ -12,6 +12,9 @@ final case class ReleaseData(version: Int, status: String, description: Option[S
 final case class ReleaseHook(data: ReleaseData) derives Schema
 final case class StateData(status: Option[String], state: Option[String], `type`: Option[String] = None) derives Schema
 final case class StateHook(data: StateData) derives Schema
+final case class SourceBlob(version: Option[String]) derives Schema
+final case class BuildData(status: Option[String], source_blob: Option[SourceBlob], output_stream_url: Option[String]) derives Schema
+final case class BuildHook(data: BuildData) derives Schema
 
 enum HookResult derives CanEqual:
   case Observed(signal: Signal, sample: String)
@@ -19,6 +22,8 @@ enum HookResult derives CanEqual:
   /** A dyno reported `crashed`. A release's dyno cycle (a deploy, an add-on config change) reports this too, so it isn't a crash until
     * [[Detector.dynoCrashed]] has checked for a release around it. */
   case DynoCrashed
+  /** A build failed. `output` is its `output_stream_url`, read by [[Ops]] before the event is recorded (see [[BuildOutput]]). */
+  case BuildFailed(commit: Option[String], output: Option[String])
 
 object Webhook:
   private val OneOff = Set("run", "release")
@@ -37,8 +42,9 @@ object Webhook:
               case "succeeded" => List(HookResult.Released(Release(r.version, Classifier.sample(r.description.getOrElse("")).take(120), at)))
               case _           => Nil
         case "build" =>
-          decode[StateHook](body).map(_.data).map: d =>
-            if d.status.contains("failed") then List(HookResult.Observed(Signal.BuildFailed, "build failed")) else Nil
+          decode[BuildHook](body).map(_.data).map: d =>
+            if d.status.contains("failed") then List(HookResult.BuildFailed(d.source_blob.flatMap(_.version).map(BuildOutput.commit), d.output_stream_url))
+            else Nil
         case "dyno" =>
           decode[StateHook](body).map(_.data).map: d =>
             // Only a dyno that serves the app: a one-off `heroku run` dyno (type `run`) or the release phase (`release`, whose

@@ -32,8 +32,8 @@ final case class Apps(apps: List[AppSummary]) derives Schema
 final case class Series(app: String, points: List[MinutePoint]) derives Schema
 /** One of the app's own lines near a timeout or 5xx; `sameRequest` when it carries the router line's request id (#24). */
 final case class AppLineOut(at: Instant, dyno: String, sameRequest: Boolean, line: String) derives Schema, CanEqual
-/** `appLines` only when asked for, and only for a timeout or 5xx. */
-final case class EventOut(at: Instant, signal: String, sample: String, appLines: Option[List[AppLineOut]] = None) derives Schema
+/** `appLines` only when asked for, and only for a timeout or 5xx. `buildOutput`: for the app's latest buildfailed, the end of its output. */
+final case class EventOut(at: Instant, signal: String, sample: String, appLines: Option[List[AppLineOut]] = None, buildOutput: Option[List[String]] = None) derives Schema
 final case class Events(app: String, events: List[EventOut]) derives Schema
 final case class AddedOut(at: Instant, conditions: List[String]) derives Schema
 final case class IncidentOut(
@@ -103,7 +103,8 @@ object Triage:
     val lines = s.appLines.getOrElse(w.app, AppLines.empty)
     def context(n: Notable) = Option.when(appLines)(n.anchor).flatten.map: a =>
       lines.around(a, AppLinesPerEvent).map(l => AppLineOut(l.at, l.dyno, AppLines.sameRequest(a, l), l.line))
-    Events(w.app.value, picked.take(limit).toList.map(n => EventOut(n.at, n.signal.toString.toLowerCase, n.sample, context(n))))
+    def output(n: Notable) = s.builds.get(w.app).filter(b => n.signal == Signal.BuildFailed && b.at.equals(n.at) && b.lines.nonEmpty).map(_.lines)
+    Events(w.app.value, picked.take(limit).toList.map(n => EventOut(n.at, n.signal.toString.toLowerCase, n.sample, context(n), output(n))))
 
   def incidents(s: OpsState, app: Option[String], limit: Int): Incidents =
     val all = s.incidents.reverse.filter(i => app.forall(_.equalsIgnoreCase(i.app.value)))

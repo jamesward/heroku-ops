@@ -42,7 +42,7 @@ object OpsMcp:
 
   private val recentEvents = McpTool("recent_events")
     .annotations(readOnly = OptBool.True, destructive = OptBool.False, idempotent = OptBool.True)
-    .description("Newest first: the quoted log lines and webhook events behind an app's alerts (crash, timeout, routererror, servererror, memory, apperror, releasefailed, buildfailed). Optional signal filter, limit 20 (max 100). Lines are truncated, with query strings and client addresses removed. appLines: true adds, to each timeout and servererror, the app's own log lines of the same request (request_id), or else of the same dyno within 30 s (at most 20, oldest first), to see where a request's time went.")
+    .description("Newest first: the quoted log lines and webhook events behind an app's alerts (crash, timeout, routererror, servererror, memory, apperror, releasefailed, buildfailed). Optional signal filter, limit 20 (max 100). Lines are truncated, with query strings and client addresses removed. appLines: true adds, to each timeout and servererror, the app's own log lines of the same request (request_id), or else of the same dyno within 30 s (at most 20, oldest first), to see where a request's time went. A buildfailed event has the failed build's commit in its sample and, for the app's latest one, buildOutput: the last lines of the build's output (at most 50).")
     .handle[Ops, ToolError, EventsArg, Events]: arg =>
       view.flatMap((_, s) => watched(s, arg.app).map(Triage.events(s, _, arg.signal, arg.limit.getOrElse(20).max(1).min(100), arg.appLines.contains(true))))
 

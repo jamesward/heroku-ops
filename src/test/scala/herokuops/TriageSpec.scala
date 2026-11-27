@@ -29,6 +29,14 @@ object TriageSpec extends ZIOSpecDefault:
       val points = Triage.series(s, w, now, 3)
       assertTrue(points.size == 3, points.last.requests == 2, points.last.signals == Map("timeout" -> 1), points.head.requests == 0, points.head.minute.isBefore(points.last.minute))
     },
+    test("the latest buildfailed event has the end of the build's output (projects#68)") {
+      val older = now.minusSeconds(600)
+      val s = base.record(app, List(Event.Observed(Signal.BuildFailed, "build failed at aaa1111")), older)
+        .record(app, List(Event.Observed(Signal.BuildFailed, "build failed at bbb2222")), now)
+        .built(app, BuildOutput(now, Some("bbb2222"), List("[error] boom")))
+      val events = Triage.events(s, w, Some("buildfailed"), 10).events
+      assertTrue(events.map(_.buildOutput) == List(Some(List("[error] boom")), None), events.head.sample == "build failed at bbb2222")
+    },
     test("events are newest first, filterable and capped") {
       val s = base.record(app, List(Event.Observed(Signal.Crash, "a")), now).record(app, List(Event.Observed(Signal.Timeout, "b")), now.plusSeconds(5))
       val all = Triage.events(s, w, None, 10).events

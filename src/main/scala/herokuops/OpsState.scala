@@ -45,6 +45,8 @@ final case class OpsState(
     /** When this process started: everything here (releases above all) was seen after it. */
     since: Instant,
     appLines: Map[AppName, AppLines] = Map.empty,
+    /** Each app's latest failed build, with the end of its output. */
+    builds: Map[AppName, BuildOutput] = Map.empty,
 ):
   def app(name: AppName): AppState = apps.getOrElse(name, Detector.empty)
 
@@ -54,6 +56,8 @@ final case class OpsState(
       apps = apps.updated(name, events.foldLeft(app(name))(Detector.record(_, _, at))),
       recent = recent.updated(name, (recent.getOrElse(name, Vector.empty) ++ notable).takeRight(OpsState.RecentPerApp)),
     )
+
+  def built(name: AppName, b: BuildOutput): OpsState = copy(builds = builds.updated(name, b))
 
   /** The app's own lines of a drain batch, kept when they are near one of its recent timeouts or 5xx (see [[AppLines]]). Call it after
     * [[record]] for the same batch, so the batch's own timeouts count. */
