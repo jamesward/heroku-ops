@@ -28,12 +28,15 @@ object Classifier:
   def sample(text: String): String =
     Control.replaceAllIn(Fwd.replaceAllIn(Path.replaceAllIn(text, m => s"""path="${m.group(1)}""""), "fwd=-"), " ").take(300)
 
+  /** An app's line: a JSON one from its chosen fields ([[JsonLine]]), any other from its start. */
+  def appSample(text: String): String = sample(JsonLine.sample(text).getOrElse(text))
+
   def isDyno(proc: String): Boolean = Dyno.matches(proc)
 
   /** The app's own line from a dyno (`web.1`), kept to put next to a timeout or 5xx (#24). */
   def appLine(m: LogMessage, at: Instant): Option[AppLine] =
     Option.when(m.source == "app" && isDyno(m.proc)):
-      AppLine(at, m.proc, AppRequestId.findFirstMatchIn(m.text).map(_.group(1)), sample(m.text))
+      AppLine(at, m.proc, AppRequestId.findFirstMatchIn(m.text).map(_.group(1)), appSample(m.text))
 
   def classify(m: LogMessage): List[Event] =
     if m.source == "heroku" && m.proc == "router" then router(m.text)
@@ -86,4 +89,4 @@ object Classifier:
     val isError = JsonLevel.findFirstMatchIn(text) match
       case Some(m) => m.group(1).equalsIgnoreCase("ERROR") || m.group(1).equalsIgnoreCase("FATAL")
       case None    => TextError.findFirstIn(text).isDefined
-    if isError then List(observed(Signal.AppError, text)) else Nil
+    if isError then List(Event.Observed(Signal.AppError, appSample(text))) else Nil

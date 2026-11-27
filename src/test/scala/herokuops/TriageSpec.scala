@@ -84,7 +84,7 @@ object TriageSpec extends ZIOSpecDefault:
       assertTrue(
         timeout.size == 1,
         lines.map(l => (l.line.take(30), l.sameRequest)) == List(
-          ("""{"level":"INFO","message":"Dow""", true), ("other request on web.1", false), ("""{"level":"INFO","message":"Dow""", true)),
+          ("""INFO "Downloading jar" request""", true), ("other request on web.1", false), ("""INFO "Downloaded jar" request_""", true)),
         lines.map(_.at) == List(t0, t0.plusSeconds(10), t0.plusSeconds(35)),
         lines.forall(_.dyno == "web.1"),
         Triage.events(s, w, Some("timeout"), 10).events.head.appLines.isEmpty,
