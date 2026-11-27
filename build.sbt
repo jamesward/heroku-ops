@@ -7,7 +7,7 @@ lazy val root = (project in file(".")).dependsOn(
   Option.when(useLocal)(RootProject(localMcp): ClasspathDep[ProjectReference]).toSeq*
 )
 
-libraryDependencies ++= Option.unless(useLocal)("com.jamesward" %% "zio-http-mcp" % "0.13.4").toSeq
+libraryDependencies ++= Option.unless(useLocal)("com.jamesward" %% "zio-http-mcp" % "0.16.1").toSeq
 
 enablePlugins(JavaAppPackaging)
 
@@ -27,7 +27,7 @@ val zioVersion = "2.1.27"
 
 libraryDependencies ++= Seq(
   "dev.zio"   %% "zio"                 % zioVersion,
-  "dev.zio"   %% "zio-http"            % "3.11.6",
+  "dev.zio"   %% "zio-http"            % "3.12.0",
   "dev.zio"   %% "zio-logging"         % "2.5.5",
   // The slf4j2 bridge is the sole slf4j provider, so Netty and the other Java libraries log through ZIO's logger.
   "dev.zio"   %% "zio-logging-slf4j2-bridge" % "2.5.5",
