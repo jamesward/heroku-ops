@@ -311,5 +311,15 @@ object PureSpec extends ZIOSpecDefault:
           !timeout.contains("memory sample"),
         )
       },
+      test("within a day of heroku-ops starting, the text says an open incident may predate the restart (#23)") {
+        val at = Instant.parse("2026-11-13T17:52:13Z")
+        val w = Watched(app, "webjars/webjars", "https://www.webjars.org", "/", None)
+        def text(since: Instant) = IncidentText.build(Alert(app, at, List(Reason(Signal.Memory, 3)), Nil), w, None, since, None)
+        assertTrue(
+          text(at.minusSeconds(630)).contains("heroku-ops started at 2026-11-13T17:41:43Z and keeps its history in memory"),
+          text(at.minusSeconds(630)).contains("an open incident issue may already cover this condition"),
+          !text(at.minus(Detector.Repeat)).contains("keeps its history in memory"),
+        )
+      },
     ),
   )
