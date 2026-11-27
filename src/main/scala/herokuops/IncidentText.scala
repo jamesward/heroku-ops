@@ -29,6 +29,6 @@ object IncidentText:
 
   def describe(m: MemoryReading): String =
     val s = m.sample
-    val share = if s.quota > 0 then f" (${s.total / s.quota * 100}%.0f%%)" else ""
-    s"${m.dyno} at ${m.at.truncatedTo(ChronoUnit.SECONDS)}: total ${mb(s.total)} of a ${mb(s.quota)} quota$share, " +
-      s"rss ${mb(s.rss)}, cache ${mb(s.cache)}, swap ${mb(s.swap)}"
+    val share = if s.quota > 0 then f" (${s.rssSwap / s.quota * 100}%.0f%%)" else ""
+    s"${m.dyno} at ${m.at.truncatedTo(ChronoUnit.SECONDS)}: rss+swap ${mb(s.rssSwap)} of a ${mb(s.quota)} quota$share, " +
+      s"rss ${mb(s.rss)}, swap ${mb(s.swap)}, cache ${mb(s.cache)}, total incl. reclaimable cache ${mb(s.total)}"

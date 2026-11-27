@@ -3,7 +3,7 @@ package herokuops
 import java.time.{Duration, Instant}
 
 /** Rolling per-app counters, in per-minute buckets, and the rules that turn them into an alert. Pure: the caller owns the state. */
-final case class Bucket(requests: Int, counts: Map[Signal, Int], samples: Map[Signal, List[String]], memory: Option[MemorySample] = None)
+final case class Bucket(requests: Int, counts: Map[Signal, Int], samples: Map[Signal, List[String]], memory: Option[MemoryPeak] = None)
 
 final case class AppState(
     buckets: Map[Long, Bucket],
@@ -62,7 +62,7 @@ object Detector:
     val b = s.buckets.getOrElse(m, noBucket)
     val updated = event match
       case Event.Request => b.copy(requests = b.requests + 1)
-      case Event.Measured(_, memory) => b.copy(memory = Some(b.memory.fold(memory)(_.max(memory))))
+      case Event.Measured(_, memory) => b.copy(memory = Some(b.memory.fold(MemoryPeak.of(memory))(_.max(memory))))
       case Event.Observed(sig, sample) =>
         val sameCrash = sig == Signal.Crash && s.lastCrash.exists(near(_, at, CrashLines))
         b.copy(
