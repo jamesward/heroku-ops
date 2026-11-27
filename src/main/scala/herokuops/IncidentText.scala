@@ -29,8 +29,6 @@ object IncidentText:
 
   def describe(m: MemoryReading): String =
     val s = m.sample
-    // Heroku's R14 tracks rss + swap; total also counts page cache, which can be reclaimed.
-    val quotaUse = s.rss + s.swap
-    val share = if s.quota > 0 then f" (${quotaUse / s.quota * 100}%.0f%%)" else ""
-    s"${m.dyno} at ${m.at.truncatedTo(ChronoUnit.SECONDS)}: rss+swap ${mb(quotaUse)} of a ${mb(s.quota)} quota$share, " +
+    val share = if s.quota > 0 then f" (${s.rssSwap / s.quota * 100}%.0f%%)" else ""
+    s"${m.dyno} at ${m.at.truncatedTo(ChronoUnit.SECONDS)}: rss+swap ${mb(s.rssSwap)} of a ${mb(s.quota)} quota$share, " +
       s"rss ${mb(s.rss)}, swap ${mb(s.swap)}, cache ${mb(s.cache)}, total incl. reclaimable cache ${mb(s.total)}"

@@ -50,10 +50,11 @@ object TriageSpec extends ZIOSpecDefault:
         .record(app, List(Event.Measured("web.1", a), Event.Measured("web.2", b)), now)
       val points = Triage.series(s, w, now, 3)
       assertTrue(
-        points.last.memory == Some(MemoryOut(505.16, 500, 3, 8.18, 1024)),
-        points(1).memory == Some(MemoryOut(505.16, 496.36, 0.62, 8.18, 1024)),
+        // rss+swap is the larger of one sample's sum (504.54), not the sum of the separate peaks (508.18) (#25)
+        points.last.memory == Some(MemoryOut(496.36 + 8.18, 1024, 500, 8.18, 3, 505.16)),
+        points(1).memory == Some(MemoryOut(496.36 + 8.18, 1024, 496.36, 8.18, 0.62, 505.16)),
         points.head.memory.isEmpty,
-        Triage.summary(s, w, now).memory == Some(MemoryReadingOut(now, "web.2", MemoryOut(480, 500, 3, 0, 1024))),
+        Triage.summary(s, w, now).memory == Some(MemoryReadingOut(now, "web.2", MemoryOut(500, 1024, 500, 0, 3, 480))),
         Triage.summary(base, w, now).memory.isEmpty,
       )
     },

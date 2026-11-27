@@ -16,8 +16,8 @@ object OpsMcp:
   private val instructions =
     """Read-only view of the production Heroku apps that heroku-ops watches. Use it to triage an incident:
       |list_apps shows every app's status; app_status adds the last 15 minutes; recent_events quotes the log lines behind
-      |an alert; timeseries gives per-minute counts and, for apps with log-runtime-metrics, the minute's peak memory (total,
-      |rss, cache, swap and quota, in MB); incidents shows what heroku-ops told the app's routine and whether it
+      |an alert; timeseries gives per-minute counts and, for apps with log-runtime-metrics, the minute's peak memory (in MB:
+      |rssSwap, which is what Heroku's R14 compares with the quota, then quota, rss, swap, cache and total, which also counts reclaimable page cache); incidents shows what heroku-ops told the app's routine and whether it
       |arrived; releases shows recent deploys, to line a problem up with a change; probe_now requests the app now.
       |alert_rules explains what counts as a problem. Everything is in memory: a heroku-ops restart forgets history
       |(releases' historySince says when it began), and only about the last hour of counts is kept. Nothing here can change an app; a fix is a pull request.
@@ -48,7 +48,7 @@ object OpsMcp:
 
   private val timeseries = McpTool("timeseries")
     .annotations(readOnly = OptBool.True, destructive = OptBool.False, idempotent = OptBool.True)
-    .description("Per-minute request counts, signal counts and peak memory (total, rss, cache, swap, quota in MB, from log-runtime-metrics; absent when the app doesn't log it) for an app, oldest first. minutes defaults to 30, at most 60.")
+    .description("Per-minute request counts, signal counts and peak memory (MB, from log-runtime-metrics: rssSwap is what R14 compares with quota, total includes reclaimable page cache; absent when the app doesn't log it) for an app, oldest first. minutes defaults to 30, at most 60.")
     .handle[Ops, ToolError, SeriesArg, Series]: arg =>
       view.flatMap((now, s) => watched(s, arg.app).map(w => Series(w.app.value, Triage.series(s, w, now, arg.minutes.getOrElse(30).max(1).min(60)))))
 

@@ -6,7 +6,8 @@ import java.time.Instant
 
 final case class ProbeOut(at: Instant, ok: Boolean, status: Option[Int], millis: Long) derives Schema
 final case class ReleaseOut(version: Int, at: Instant, description: String) derives Schema
-final case class MemoryOut(totalMb: Double, rssMb: Double, cacheMb: Double, swapMb: Double, quotaMb: Double) derives Schema, CanEqual
+/** `rssSwapMb` is what Heroku's R14 compares with `quotaMb`; `totalMb` also counts reclaimable page cache (#25). */
+final case class MemoryOut(rssSwapMb: Double, quotaMb: Double, rssMb: Double, swapMb: Double, cacheMb: Double, totalMb: Double) derives Schema, CanEqual
 final case class MemoryReadingOut(at: Instant, dyno: String, memory: MemoryOut) derives Schema, CanEqual
 final case class AppSummary(
     app: String,
@@ -51,7 +52,7 @@ object Triage:
 
   private def release(r: Release) = ReleaseOut(r.version, r.at, r.description)
 
-  private def memory(m: MemorySample) = MemoryOut(m.total, m.rss, m.cache, m.swap, m.quota)
+  private def memory(m: MemorySample, rssSwap: Double) = MemoryOut(rssSwap, m.quota, m.rss, m.swap, m.cache, m.total)
 
   def summary(s: OpsState, w: Watched, now: Instant): AppSummary =
     val st = s.app(w.app)
@@ -68,7 +69,7 @@ object Triage:
       conditions.map(describe),
       s.releases.get(w.app).flatMap(_.headOption).map(release),
       w.routine.isDefined,
-      st.lastMemory.map(m => MemoryReadingOut(m.at, m.dyno, memory(m.sample))),
+      st.lastMemory.map(m => MemoryReadingOut(m.at, m.dyno, memory(m.sample, m.sample.rssSwap))),
     )
 
   def apps(s: OpsState, now: Instant): Apps = Apps(s.watched.values.toList.sortBy(_.app.value).map(summary(s, _, now)))
@@ -80,7 +81,7 @@ object Triage:
       val b = st.buckets.get(m)
       MinutePoint(Instant.ofEpochSecond(m * 60), b.map(_.requests).getOrElse(0),
         b.map(_.counts.collect { case (sig, n) if n > 0 => sig.toString.toLowerCase -> n }).getOrElse(Map.empty),
-        b.flatMap(_.memory).map(memory))
+        b.flatMap(_.memory).map(p => memory(p.fields, p.rssSwap)))
 
   def detail(s: OpsState, w: Watched, now: Instant): AppDetail = AppDetail(summary(s, w, now), series(s, w, now, 15))
 

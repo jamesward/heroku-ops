@@ -30,9 +30,18 @@ enum Signal derives CanEqual:
 
 /** A `log-runtime-metrics` memory sample (`sample#memory_*`, every 20 s per dyno), in MB. */
 final case class MemorySample(total: Double, rss: Double, cache: Double, swap: Double, quota: Double) derives CanEqual:
-  /** The larger of each field: a minute's peak, across samples and dynos. */
-  def max(o: MemorySample): MemorySample =
-    MemorySample(total.max(o.total), rss.max(o.rss), cache.max(o.cache), swap.max(o.swap), quota.max(o.quota))
+  /** What Heroku's R14 compares with the quota (#25): `total` also counts page cache, which can be reclaimed. */
+  def rssSwap: Double = rss + swap
+
+/** A minute's peak, across samples and dynos: the larger of each field, and the largest `rss + swap` of any one sample (the peaks of rss and
+  * swap can come from different samples, so their sum would overstate it). */
+final case class MemoryPeak(fields: MemorySample, rssSwap: Double) derives CanEqual:
+  def max(s: MemorySample): MemoryPeak =
+    val f = fields
+    MemoryPeak(MemorySample(f.total.max(s.total), f.rss.max(s.rss), f.cache.max(s.cache), f.swap.max(s.swap), f.quota.max(s.quota)), rssSwap.max(s.rssSwap))
+
+object MemoryPeak:
+  def of(s: MemorySample): MemoryPeak = MemoryPeak(s, s.rssSwap)
 
 /** The latest memory sample of an app, and the dyno (`web.1`) it came from. */
 final case class MemoryReading(at: Instant, dyno: String, sample: MemorySample)
