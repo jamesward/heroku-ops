@@ -260,6 +260,30 @@ object PureSpec extends ZIOSpecDefault:
           Detector.evaluate(app, load(5, 100), t0)._2.nonEmpty,
         )
       },
+      test("fast 503s in a request burst are shedding: held until they last the window, then alerted with the burst and its clients (#28)") {
+        val t0 = Instant.parse("2026-11-22T17:30:00Z")
+        def line(service: Int, status: Int, client: String) =
+          s"""at=info method=GET path="/a/b" host=www.javadocs.dev request_id=r fwd="$client" dyno=web.1 connect=0ms service=${service}ms status=$status bytes=67"""
+        def minute(s: AppState, m: Int, ok: Int, errors: Int, service: Int): AppState =
+          val at = t0.plusSeconds(m * 60L)
+          val lines = List.tabulate(ok)(i => line(20, 200, s"198.51.100.${i % 50}")) ++ List.tabulate(errors)(i => line(service, 503, if i % 10 == 0 then "192.0.2.1" else "203.0.113.7"))
+          lines.flatMap(l => Classifier.classify(LogMessage("heroku", "router", l))).foldLeft(s)(Detector.record(_, _, at))
+        val baseline = (0 until 20).foldLeft(Detector.empty)((s, m) => minute(s, m, 100, 0, 0))
+        def burst(service: Int, minutes: Int) = (20 until 20 + minutes).foldLeft(baseline)((s, m) => minute(s, m, 1439, 247, service))
+        def at(minutes: Int) = t0.plusSeconds((19 + minutes) * 60L + 30)
+        val (_, held) = Detector.evaluate(app, burst(1, 2), at(2))
+        val shed = Detector.conditions(burst(1, 2), at(2))
+        val (_, slow) = Detector.evaluate(app, burst(30, 2), at(2))
+        val (_, sustained) = Detector.evaluate(app, burst(1, 5), at(5))
+        val (_, fresh) = Detector.evaluate(app, (20 until 22).foldLeft(Detector.empty)((s, m) => minute(s, m, 1439, 247, 1)), at(2))
+        assertTrue(
+          held.isEmpty,
+          shed.map(_.text) == List("servererror x494 (fast 503s during a 17× request burst; 52 clients, the busiest sent 444 requests; not alerted unless it lasts 5 minutes)"),
+          slow.exists(_.reasons.exists(r => r.signal == Signal.ServerError && r.shedding.isEmpty)),
+          sustained.toList.flatMap(_.reasons).exists(r => r.shedding.exists(_.sustained) && r.text.startsWith("servererror x1235 (fast 503s during a 17× request burst")),
+          fresh.nonEmpty,
+        )
+      },
       test("three failed probes mean down; two good ones mean up") {
         val down = (1 to 3).foldLeft(Detector.empty)((s, _) => Detector.probe(s, false))
         val t0 = Instant.parse("2026-11-03T05:41:00Z")

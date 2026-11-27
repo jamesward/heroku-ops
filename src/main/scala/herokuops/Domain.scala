@@ -48,6 +48,10 @@ final case class MemoryReading(at: Instant, dyno: String, sample: MemorySample)
 
 enum Event derives CanEqual:
   case Request
+  /** The client of a request (the router's `fwd`), as a hash: kept in memory to count clients, never returned (#28). */
+  case From(client: Int)
+  /** A 503 the app answered within [[Classifier.FastMillis]]: a deliberate rejection, such as a full bulkhead, not a failure (#28). */
+  case FastUnavailable
   /** `request` is the router line's dyno and request id, for a timeout or 5xx (#24). */
   case Observed(signal: Signal, sample: String, request: Option[RequestRef] = None)
   case Measured(dyno: String, memory: MemorySample)

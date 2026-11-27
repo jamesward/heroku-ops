@@ -3,7 +3,16 @@ package herokuops
 import java.time.{Duration, Instant}
 
 /** Rolling per-app counters, in per-minute buckets, and the rules that turn them into an alert. Pure: the caller owns the state. */
-final case class Bucket(requests: Int, counts: Map[Signal, Int], samples: Map[Signal, List[String]], memory: Option[MemoryPeak] = None)
+final case class Bucket(
+    requests: Int,
+    counts: Map[Signal, Int],
+    samples: Map[Signal, List[String]],
+    memory: Option[MemoryPeak] = None,
+    /** 503s answered within [[Classifier.FastMillis]]. */
+    fastUnavailable: Int = 0,
+    /** Requests per client hash, at most [[Detector.MaxClients]] clients. */
+    clients: Map[Int, Int] = Map.empty,
+)
 
 final case class AppState(
     buckets: Map[Long, Bucket],
@@ -20,7 +29,20 @@ final case class AppState(
     lastMemory: Option[MemoryReading] = None,
 )
 
-final case class Reason(signal: Signal, count: Int) derives CanEqual
+/** A `servererror` whose 5xx are nearly all fast 503s while the request rate is a multiple of its baseline: the app shedding a burst on
+  * purpose (javadocs' bulkhead, #28). `burst` is the busiest minute of the window over the baseline. It alerts only once it lasts the
+  * whole window (`sustained`). `clients` and `busiest` describe the window's requests: how many clients, and how many requests the busiest
+  * one sent. */
+final case class Shedding(burst: Double, sustained: Boolean, clients: Int, busiest: Option[Int]) derives CanEqual
+
+final case class Reason(signal: Signal, count: Int, shedding: Option[Shedding] = None) derives CanEqual:
+  def text: String =
+    val base = s"${signal.toString.toLowerCase} x$count"
+    shedding.fold(base): sh =>
+      val share = sh.busiest.fold("no client addresses"): n =>
+        s"${sh.clients}${if sh.clients >= Detector.MaxClients then "+" else ""} clients, the busiest sent $n requests"
+      val held = if sh.sustained then "" else s"; not alerted unless it lasts ${Detector.WindowMinutes} minutes"
+      f"$base (fast 503s during a ${sh.burst}%.0f× request burst; $share$held)"
 
 final case class Alert(app: AppName, at: Instant, reasons: List[Reason], samples: List[String])
 
@@ -48,6 +70,13 @@ object Detector:
   /** 5xx are rare in practice (none in hours of webjars, file-service, javadocs and semver traffic), so a few are news. */
   val ServerErrorMinimum = 5
   val ServerErrorRatio = 0.01
+  /** Shedding: at least this share of the window's 5xx are fast 503s, the busiest minute has this many times the baseline's requests per
+    * minute, and the baseline is the minutes before the window, at least [[BaselineMinutes]] of them with data. */
+  val SheddingShare = 0.9
+  val BurstFactor = 3.0
+  val BaselineMinutes = 10
+  /** Distinct clients counted per minute; beyond it a minute's count reads as "at least". */
+  val MaxClients = 500
 
   def threshold(signal: Signal): Int = Thresholds(signal)
 
@@ -62,6 +91,9 @@ object Detector:
     val b = s.buckets.getOrElse(m, noBucket)
     val updated = event match
       case Event.Request => b.copy(requests = b.requests + 1)
+      case Event.FastUnavailable => b.copy(fastUnavailable = b.fastUnavailable + 1)
+      case Event.From(c) =>
+        if b.clients.contains(c) || b.clients.size < MaxClients then b.copy(clients = b.clients.updated(c, b.clients.getOrElse(c, 0) + 1)) else b
       case Event.Measured(_, memory) => b.copy(memory = Some(b.memory.fold(MemoryPeak.of(memory))(_.max(memory))))
       case Event.Observed(sig, sample, _) =>
         val sameCrash = sig == Signal.Crash && s.lastCrash.exists(near(_, at, CrashLines))
@@ -121,13 +153,27 @@ object Detector:
     val counted = Thresholds.toList.collect { case (sig, min) if total(sig) >= min => Reason(sig, total(sig)) }
     val requests = w.map(_.requests).sum
     val errors = total(Signal.ServerError)
-    val server = Option.when(errors >= ServerErrorMinimum && errors.toDouble / requests.max(1) >= ServerErrorRatio)(Reason(Signal.ServerError, errors))
+    val server = Option.when(errors >= ServerErrorMinimum && errors.toDouble / requests.max(1) >= ServerErrorRatio):
+      Reason(Signal.ServerError, errors, shedding(s, at, errors))
     val probe = Option.when(s.down)(Reason(Signal.ProbeDown, s.probeFailures))
     counted ++ server ++ probe
 
+  private def shedding(s: AppState, at: Instant, errors: Int): Option[Shedding] =
+    val m = minute(at)
+    val w = (m - WindowMinutes + 1 to m).map(k => s.buckets.getOrElse(k, noBucket))
+    val baseline = s.buckets.collect { case (k, b) if k <= m - WindowMinutes => b.requests }.toList
+    val fast = w.map(_.fastUnavailable).sum
+    val peak = w.map(_.requests).max
+    Option.when(baseline.size >= BaselineMinutes && fast >= errors * SheddingShare):
+      peak / (baseline.sum.toDouble / baseline.size).max(1)
+    .filter(_ >= BurstFactor).map: burst =>
+      val clients = w.flatMap(_.clients).groupMapReduce(_._1)(_._2)(_ + _)
+      Shedding(burst, w.forall(_.counts.getOrElse(Signal.ServerError, 0) > 0), clients.size, clients.values.maxOption)
+
   /** An alert for each condition that has just started (and hasn't alerted in the last [[Cooldown]]), or has lasted [[Repeat]]. */
   def evaluate(app: AppName, s: AppState, at: Instant): (AppState, Option[Alert]) =
-    val found = reasons(s, at)
+    // Shedding that hasn't lasted the window is neither alerted nor active, so it alerts as a new condition once it has.
+    val found = reasons(s, at).filterNot(_.shedding.exists(!_.sustained))
     val due = found.filter: r =>
       val last = s.lastFire.get(r.signal)
       val onset = !s.active.contains(r.signal)

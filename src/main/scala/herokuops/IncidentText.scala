@@ -10,7 +10,7 @@ object IncidentText:
     * [[Detector.Repeat]] of it may repeat one fired before the restart (#23), so the text says so. `memory` is the app's latest
     * `log-runtime-metrics` sample, reported for a memory alert. */
   def build(alert: Alert, w: Watched, release: Option[Release], since: Instant, memory: Option[MemoryReading]): String =
-    val signals = alert.reasons.map(r => s"${r.signal.toString.toLowerCase} x${r.count}").mkString(", ")
+    val signals = alert.reasons.map(_.text).mkString(", ")
     val rel = release.fold(s"none seen since heroku-ops started at ${since.truncatedTo(ChronoUnit.SECONDS)} (history is in memory)"): r =>
       s"v${r.version} at ${r.at.truncatedTo(ChronoUnit.SECONDS)}: ${r.description}"
     val mem = memory.filter(_ => alert.reasons.exists(_.signal == Signal.Memory)).fold("")(m => s"\nlatest memory sample: ${describe(m)}")

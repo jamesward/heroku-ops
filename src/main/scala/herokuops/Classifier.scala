@@ -1,9 +1,13 @@
 package herokuops
 
 import java.time.Instant
+import scala.util.hashing.MurmurHash3
 
 /** Heuristics that turn a log line into events. Detection is patterns and counts, not AI. */
 object Classifier:
+  /** javadocs' jar-fetch bulkhead answers 503 in 0–2 ms when it is full (#28); a request that did work takes longer. */
+  val FastMillis = 5
+
   private val Pair = raw"""(\w+)=("([^"]*)"|\S*)""".r
   private val Crashed = raw"State changed from \w+ to crashed".r.unanchored
   private val Memory = raw"Error (R1[45]) ".r.unanchored
@@ -11,6 +15,7 @@ object Classifier:
   private val TextError = raw"\b(ERROR|FATAL)\b".r.unanchored
   private val Path = raw"""path="([^"?]*)\?[^"]*"""".r
   private val Fwd = raw"""fwd="[^"]*"""".r
+  private val Millis = raw"(\d+)ms".r
   private val Control = raw"[\p{Cntrl}&&[^\t]]".r
   private val MemoryField = raw"sample#memory_(total|rss|cache|swap|quota)=(\d+(?:\.\d+)?)MB".r
   private val Dyno = raw"[a-z][a-z0-9_]*\.\d{1,4}".r
@@ -56,8 +61,13 @@ object Classifier:
       case _                     => None
     val serverError = status.filter(_ >= 500).map(_ => Signal.ServerError)
     val seen = Option.when(f.contains("method"))(Event.Request).toList
+    val client = f.get("fwd").flatMap(_.split(',').headOption).map(_.trim).filter(_.nonEmpty).map(c => Event.From(MurmurHash3.stringHash(c)))
+    val fast = Option.when(status.contains(503) && f.get("at").contains("info") && f.get("service").exists:
+      case Millis(ms) => ms.toIntOption.exists(_ <= FastMillis)
+      case _          => false
+    )(Event.FastUnavailable)
     val request = RequestRef(f.get("dyno").filter(isDyno), f.get("request_id").filter(RequestId.matches))
-    seen ++ failure.orElse(serverError).map: sig =>
+    seen ++ client ++ fast ++ failure.orElse(serverError).map: sig =>
       Event.Observed(sig, sample(text), Option.when(sig == Signal.Timeout || sig == Signal.ServerError)(request))
     .toList
 

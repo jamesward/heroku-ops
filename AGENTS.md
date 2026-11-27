@@ -27,6 +27,7 @@ Tuned on real traffic (2026-11-03): `heroku logs -n 1500` dumps of webjars, webj
 | H12 request timeout | 5 |
 | Router faults H11, H13, H14, H17, H19-H23, H99 | 5 |
 | 5xx from the app | 5 and at least 1% of requests |
+| The same, when 90% of them are 503s answered within 5 ms and the busiest minute has 3× the requests per minute of the earlier minutes (at least 10 of them): the app shedding a burst (#28) | only once 5xx are in all 5 minutes of the window |
 | App `ERROR`/`FATAL` log lines (a JSON line by its `level` field only) | 10 |
 | Probe: 3 failures in a row (1 per minute) | down until 2 successes |
 
@@ -40,7 +41,7 @@ One event, one incident:
 - A one-off dyno (`heroku run`, type `run`) or the release phase (type `release`) reports `crashed` whenever its command exits non-zero. That isn't the app crashing (#16: a `heroku run bash -c …` probe on jw-heroku-ops exited 1), so the dyno webhook counts only other dyno types.
 
 What the data showed:
-- 5xx: none in hours of traffic on four apps, so a few is news. 4xx is 35% of webjars traffic (scanners): never alert on it.
+- 5xx: none in hours of traffic on four apps, so a few is news. The exception is deliberate load shedding: on 2026-11-22 javadocs' jar-fetch bulkhead answered 247 requests of a 1,686-a-minute burst with 503 in 0–2 ms, by design, and the burst was over before the routine started (#28). Such 5xx are held until they last the window, and the alert says `fast 503s during a 17× request burst; N clients, the busiest sent M requests`. Clients are the router's `fwd`, kept per minute as hashes (at most 500) for counts, never returned; `timeseries` gives each minute's `clients` and `fast503`. Router lines have no User-Agent, so there is no User-Agent breakdown. 4xx is 35% of webjars traffic (scanners): never alert on it.
 - Latency: webjars p99 is 0.9 s with a 50 s maximum, so a latency rule would be noisy. H12 is the timeout signal.
 - H15 (idle connection) is routine for websocket apps: json-paste logged 213 in a month. It isn't a fault.
 - `Process exited with status N` isn't a crash: json-paste exited with 1 on every SIGTERM stop. Only `State changed … to crashed` counts. Exit 143 and the daily Eco restarts are normal.

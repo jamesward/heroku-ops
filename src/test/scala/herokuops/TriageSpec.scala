@@ -61,6 +61,12 @@ object TriageSpec extends ZIOSpecDefault:
     test("releases say since when they were kept (#22)") {
       assertTrue(Triage.releases(base, w).releases.isEmpty, Triage.releases(base, w).historySince == base.since)
     },
+    test("series counts fast 503s and the minute's clients, never their addresses (#28)") {
+      val lines = List("1.2.3.4", "1.2.3.4", "5.6.7.8").map(c => s"""at=info method=GET path="/" fwd="$c" dyno=web.1 service=1ms status=503""")
+      val s = base.record(app, lines.flatMap(l => Classifier.classify(LogMessage("heroku", "router", l))), now)
+      val p = Triage.series(s, w, now, 1).last
+      assertTrue(p.signals == Map("servererror" -> 3, "fast503" -> 3), p.clients == Some(ClientsOut(2, 2, false)))
+    },
     test("an unknown app lists the watched ones") {
       assertTrue(Triage.find(base, "nope") == Left("unknown app 'nope'; watched apps: webjars"))
     },

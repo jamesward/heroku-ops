@@ -21,8 +21,12 @@ final case class AppSummary(
     routineConfigured: Boolean,
     memory: Option[MemoryReadingOut],
 ) derives Schema
-/** `memory` is the minute's peak of each field, across samples and dynos, when the app logs `log-runtime-metrics`. */
-final case class MinutePoint(minute: Instant, requests: Int, signals: Map[String, Int], memory: Option[MemoryOut]) derives Schema
+/** How many clients (the router's `fwd`) sent the minute's requests, and how many the busiest one sent. `capped` when there were more than
+  * `distinct` (#28). Addresses are never kept or returned, only counts. */
+final case class ClientsOut(distinct: Int, busiest: Int, capped: Boolean) derives Schema, CanEqual
+/** `memory` is the minute's peak of each field, across samples and dynos, when the app logs `log-runtime-metrics`. `signals` also has
+  * `fast503`, the 503s answered within 5 ms (shedding, not failing). */
+final case class MinutePoint(minute: Instant, requests: Int, signals: Map[String, Int], memory: Option[MemoryOut], clients: Option[ClientsOut] = None) derives Schema
 final case class AppDetail(summary: AppSummary, lastMinutes: List[MinutePoint]) derives Schema
 final case class Apps(apps: List[AppSummary]) derives Schema
 final case class Series(app: String, points: List[MinutePoint]) derives Schema
@@ -51,7 +55,7 @@ object Triage:
     AppName.parse(app).toOption.flatMap(a => s.watched.get(a)).toRight:
       s"unknown app '$app'; watched apps: ${s.watched.keys.map(_.value).toList.sorted.mkString(", ")}"
 
-  private def describe(r: Reason) = s"${r.signal.toString.toLowerCase} x${r.count}"
+  private def describe(r: Reason) = r.text
 
   private def release(r: Release) = ReleaseOut(r.version, r.at, r.description)
 
@@ -83,8 +87,10 @@ object Triage:
     ((current - minutes + 1) to current).toList.map: m =>
       val b = st.buckets.get(m)
       MinutePoint(Instant.ofEpochSecond(m * 60), b.map(_.requests).getOrElse(0),
-        b.map(_.counts.collect { case (sig, n) if n > 0 => sig.toString.toLowerCase -> n }).getOrElse(Map.empty),
-        b.flatMap(_.memory).map(p => memory(p.fields, p.rssSwap)))
+        b.map(x => x.counts.collect { case (sig, n) if n > 0 => sig.toString.toLowerCase -> n } ++
+          Option.when(x.fastUnavailable > 0)("fast503" -> x.fastUnavailable)).getOrElse(Map.empty),
+        b.flatMap(_.memory).map(p => memory(p.fields, p.rssSwap)),
+        b.flatMap(x => x.clients.values.maxOption.map(ClientsOut(x.clients.size, _, x.clients.size >= Detector.MaxClients))))
 
   def detail(s: OpsState, w: Watched, now: Instant): AppDetail = AppDetail(summary(s, w, now), series(s, w, now, 15))
 
