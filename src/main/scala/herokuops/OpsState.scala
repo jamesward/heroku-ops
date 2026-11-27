@@ -2,7 +2,8 @@ package herokuops
 
 import java.time.{Duration, Instant}
 
-final case class Notable(at: Instant, signal: Signal, sample: String)
+final case class Notable(at: Instant, signal: Signal, sample: String, request: Option[RequestRef] = None):
+  def anchor: Option[Anchor] = request.map(Anchor(at, _))
 
 enum Delivery derives CanEqual:
   case Fired(session: String)
@@ -43,15 +44,24 @@ final case class OpsState(
     stats: Stats,
     /** When this process started: everything here (releases above all) was seen after it. */
     since: Instant,
+    appLines: Map[AppName, AppLines] = Map.empty,
 ):
   def app(name: AppName): AppState = apps.getOrElse(name, Detector.empty)
 
   def record(name: AppName, events: List[Event], at: Instant): OpsState =
-    val notable = events.collect { case Event.Observed(sig, sample) => Notable(at, sig, sample) }
+    val notable = events.collect { case Event.Observed(sig, sample, request) => Notable(at, sig, sample, request) }
     copy(
       apps = apps.updated(name, events.foldLeft(app(name))(Detector.record(_, _, at))),
       recent = recent.updated(name, (recent.getOrElse(name, Vector.empty) ++ notable).takeRight(OpsState.RecentPerApp)),
     )
+
+  /** The app's own lines of a drain batch, kept when they are near one of its recent timeouts or 5xx (see [[AppLines]]). Call it after
+    * [[record]] for the same batch, so the batch's own timeouts count. */
+  def logged(name: AppName, lines: List[AppLine], at: Instant): OpsState =
+    if lines.isEmpty then this
+    else
+      val anchors = recent.getOrElse(name, Vector.empty).reverseIterator.takeWhile(!_.at.isBefore(at.minus(AppLines.Around))).flatMap(_.anchor).toList
+      copy(appLines = appLines.updated(name, appLines.getOrElse(name, AppLines.empty).add(lines, anchors, at)))
 
   /** Heroku sends a release's webhook more than once (create and update, ~100–300 ms apart): one entry per version, the latest. */
   def released(name: AppName, release: Release): OpsState =

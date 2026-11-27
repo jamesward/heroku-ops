@@ -10,13 +10,13 @@ import zio.schema.{Schema, derived}
 object OpsMcp:
   final case class AppArg(app: String) derives Schema
   final case class SeriesArg(app: String, minutes: Option[Int]) derives Schema
-  final case class EventsArg(app: String, signal: Option[String], limit: Option[Int]) derives Schema
+  final case class EventsArg(app: String, signal: Option[String], limit: Option[Int], appLines: Option[Boolean]) derives Schema
   final case class IncidentsArg(app: Option[String], limit: Option[Int]) derives Schema
 
   private val instructions =
     """Read-only view of the production Heroku apps that heroku-ops watches. Use it to triage an incident:
       |list_apps shows every app's status; app_status adds the last 15 minutes; recent_events quotes the log lines behind
-      |an alert; timeseries gives per-minute counts and, for apps with log-runtime-metrics, the minute's peak memory (in MB:
+      |an alert (with appLines, a timeout's or 5xx's own app log lines too); timeseries gives per-minute counts and, for apps with log-runtime-metrics, the minute's peak memory (in MB:
       |rssSwap, which is what Heroku's R14 compares with the quota, then quota, rss, swap, cache and total, which also counts reclaimable page cache); incidents shows what heroku-ops told the app's routine and whether it
       |arrived; releases shows recent deploys, to line a problem up with a change; probe_now requests the app now.
       |alert_rules explains what counts as a problem. Everything is in memory: a heroku-ops restart forgets history
@@ -42,9 +42,9 @@ object OpsMcp:
 
   private val recentEvents = McpTool("recent_events")
     .annotations(readOnly = OptBool.True, destructive = OptBool.False, idempotent = OptBool.True)
-    .description("Newest first: the quoted log lines and webhook events behind an app's alerts (crash, timeout, routererror, servererror, memory, apperror, releasefailed, buildfailed). Optional signal filter, limit 20 (max 100). Lines are truncated, with query strings and client addresses removed.")
+    .description("Newest first: the quoted log lines and webhook events behind an app's alerts (crash, timeout, routererror, servererror, memory, apperror, releasefailed, buildfailed). Optional signal filter, limit 20 (max 100). Lines are truncated, with query strings and client addresses removed. appLines: true adds, to each timeout and servererror, the app's own log lines of the same request (request_id), or else of the same dyno within 30 s (at most 20, oldest first), to see where a request's time went.")
     .handle[Ops, ToolError, EventsArg, Events]: arg =>
-      view.flatMap((_, s) => watched(s, arg.app).map(Triage.events(s, _, arg.signal, arg.limit.getOrElse(20).max(1).min(100))))
+      view.flatMap((_, s) => watched(s, arg.app).map(Triage.events(s, _, arg.signal, arg.limit.getOrElse(20).max(1).min(100), arg.appLines.contains(true))))
 
   private val timeseries = McpTool("timeseries")
     .annotations(readOnly = OptBool.True, destructive = OptBool.False, idempotent = OptBool.True)

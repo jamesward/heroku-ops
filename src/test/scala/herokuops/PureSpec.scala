@@ -46,8 +46,21 @@ object PureSpec extends ZIOSpecDefault:
       },
     ),
     suite("Classifier")(
+      test("a timeout or 5xx names its dyno and request id; an app line from a dyno is kept with its request id (#24)") {
+        val h12 = "at=error code=H12 desc=\"Request timeout\" method=GET path=\"/x\" host=h request_id=ab-12 fwd=\"1.2.3.4\" dyno=web.1 status=503"
+        val at = Instant.parse("2026-11-03T05:41:00Z")
+        assertTrue(
+          Classifier.classify(LogMessage("heroku", "router", h12)).collect { case Event.Observed(_, _, r) => r } ==
+            List(Some(RequestRef(Some("web.1"), Some("ab-12")))),
+          Classifier.classify(LogMessage("heroku", "router", "at=error code=H13 method=GET path=\"/\" dyno=web.1")).collect { case Event.Observed(_, _, r) => r } == List(None),
+          Classifier.appLine(LogMessage("app", "web.1", """{"message":"x","request_id":"ab-12"}"""), at) == Some(AppLine(at, "web.1", Some("ab-12"), """{"message":"x","request_id":"ab-12"}""")),
+          Classifier.appLine(LogMessage("app", "web.1", "plain"), at).flatMap(_.requestId).isEmpty,
+          Classifier.appLine(LogMessage("app", "api", "not a dyno"), at).isEmpty,
+          Classifier.appLine(LogMessage("heroku", "web.1", "State changed"), at).isEmpty,
+        )
+      },
       test("router timeout, crash and 5xx") {
-        def sig(t: String) = Classifier.classify(LogMessage("heroku", "router", t)).collect { case Event.Observed(s, _) => s }
+        def sig(t: String) = Classifier.classify(LogMessage("heroku", "router", t)).collect { case Event.Observed(s, _, _) => s }
         assertTrue(
           sig("at=error code=H12 desc=\"Request timeout\" method=GET path=\"/x\" status=503") == List(Signal.Timeout),
           sig("at=error code=H10 desc=\"App crashed\" method=GET path=\"/\" status=503") == List(Signal.Crash),
@@ -63,7 +76,7 @@ object PureSpec extends ZIOSpecDefault:
         assertTrue(Classifier.classify(LogMessage("heroku", "router", "at=info method=GET path=\"/\" status=200")) == List(Event.Request))
       },
       test("dyno memory and crash lines") {
-        def sig(t: String) = Classifier.classify(LogMessage("heroku", "web.1", t)).collect { case Event.Observed(s, _) => s }
+        def sig(t: String) = Classifier.classify(LogMessage("heroku", "web.1", t)).collect { case Event.Observed(s, _, _) => s }
         assertTrue(
           sig("Error R14 (Memory quota exceeded)") == List(Signal.Memory),
           sig("Error R15 (Memory quota vastly exceeded)") == List(Signal.Crash),

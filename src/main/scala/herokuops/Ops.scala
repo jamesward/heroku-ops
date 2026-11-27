@@ -34,7 +34,7 @@ final case class Ops(state: Ref[OpsState], client: Client, settings: Settings, o
         val events = messages.flatMap(Classifier.classify)
         Clock.instant.flatMap: at =>
           state.update: s =>
-            s.record(app, events, at).copy(lastLog = s.lastLog.updated(app, at))
+            s.record(app, events, at).logged(app, messages.flatMap(Classifier.appLine(_, at)), at).copy(lastLog = s.lastLog.updated(app, at))
               .bump(t => t.copy(drainBatches = t.drainBatches + 1, logLines = t.logLines + messages.size))
         .as(Outcome.Accepted)
 
