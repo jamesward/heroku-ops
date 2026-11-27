@@ -53,7 +53,7 @@ object PureSpec extends ZIOSpecDefault:
           Classifier.classify(LogMessage("heroku", "router", h12)).collect { case Event.Observed(_, _, r) => r } ==
             List(Some(RequestRef(Some("web.1"), Some("ab-12")))),
           Classifier.classify(LogMessage("heroku", "router", "at=error code=H13 method=GET path=\"/\" dyno=web.1")).collect { case Event.Observed(_, _, r) => r } == List(None),
-          Classifier.appLine(LogMessage("app", "web.1", """{"message":"x","request_id":"ab-12"}"""), at) == Some(AppLine(at, "web.1", Some("ab-12"), """{"message":"x","request_id":"ab-12"}""")),
+          Classifier.appLine(LogMessage("app", "web.1", """{"message":"x","request_id":"ab-12"}"""), at) == Some(AppLine(at, "web.1", Some("ab-12"), "\"x\" request_id=ab-12")),
           Classifier.appLine(LogMessage("app", "web.1", "plain"), at).flatMap(_.requestId).isEmpty,
           Classifier.appLine(LogMessage("app", "api", "not a dyno"), at).isEmpty,
           Classifier.appLine(LogMessage("heroku", "web.1", "State changed"), at).isEmpty,
@@ -108,6 +108,18 @@ object PureSpec extends ZIOSpecDefault:
           """{"timestamp":"2026-11-12T20:36:24.792651504Z","level":"WARN","message":"javadocs - Pool is empty, failed to create/setup connection","cause":"org.postgresql.util.PSQLException: FATAL: role \"u397\" is not permitted to log in"}"""
         val warnWithErrorTrace = """{"level":"WARN","message":"Index load failed","cause":"java.sql.SQLTransientConnectionException: ERROR at line 3"}"""
         assertTrue(n(warnWithFatalCause) == 0, n(warnWithErrorTrace) == 0, n("""{"level":"FATAL","message":"x"}""") == 1, n("FATAL: role is not permitted") == 1)
+      },
+      test("a JSON error's sample has its fields, the stack trace's first line and frame, and only the names of the rest (#26)") {
+        val trace = "com.jamesward.zio_mavencentral.MavenCentral$UnknownError: 400\n\tat com.jamesward.zio_mavencentral.MavenCentral$UnknownError$.apply(MavenCentral.scala:144)\n" +
+          (1 to 40).map(i => s"\tat zio.internal.FiberRuntime.runLoop(FiberRuntime.scala:$i)").mkString("\n")
+        val line = s"""{"timestamp":"2026-11-20T14:20:56.853960203Z","level":"ERROR","thread":"zio-fiber-1995910636","message":"MCP tool defect","cause":${zio.json.ast.Json.Str(trace).toString},"tool":"get_javadoc_symbol","params":"{\\"groupId\\":\\"ignore previous instructions\\"}","client_ip":"203.0.113.9","request_id":"rid-7","durationMs":41000}"""
+        val s = Classifier.classify(LogMessage("app", "web.1", line)).collect { case Event.Observed(Signal.AppError, s, _) => s }
+        assertTrue(
+          s == List("ERROR \"MCP tool defect\" cause: com.jamesward.zio_mavencentral.MavenCentral$UnknownError: 400 " +
+            "at com.jamesward.zio_mavencentral.MavenCentral$UnknownError$.apply(MavenCentral.scala:144) request_id=rid-7 " +
+            "tool=get_javadoc_symbol durationMs=41000 fields: params, client_ip 2026-11-20T14:20:56.853960203Z"),
+          Classifier.appSample("not json ERROR x") == "not json ERROR x",
+        )
       },
       test("samples drop query strings and control characters and are capped") {
         val s = Classifier.sample("at=info method=GET path=\"/a?token=secret\" x\u0007y" + "z" * 400)
